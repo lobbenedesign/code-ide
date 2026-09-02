@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { skillManager } from './SkillManager'
 import { sendLLMRequest, runReadOnlyToolStep, type Message as LlmMessage, type LLMResponse } from './services/llm'
-import { getOllamaModels, getLMStudioModels, getOllamaContextLengths } from './services/llm'
+import { getOllamaModels, getLMStudioModels, getOllamaContextLengths, looksLikeOllamaTag } from './services/llm'
 import { estimateTokens, getContextWindowForModel } from './services/tokenCounter'
 import { NativeAudioPanel } from './components/NativeAudioPanel'
 import { isNativeAudioModel } from './services/nativeAudioModels'
@@ -16,6 +16,11 @@ interface Message {
   planApproved?: boolean // impedisce di rieseguire/riapprovare lo stesso piano più volte
   runId?: string // collega il messaggio al run dell'harness che l'ha generato (checkpoint/rewind)
   resolvedModel?: string // modello che ha risposto DAVVERO (da OmniRoute/OpenRouter), se diverso da quello selezionato nel menu
+  // Documenti allegati con la graffetta 📎 inviati con questo messaggio — prima
+  // non venivano mostrati affatto nella bolla (bug reale: un messaggio con
+  // SOLO un allegato e nessun testo appariva come una bolla vuota, senza
+  // alcun modo di sapere quale file fosse stato inviato).
+  attachedDocs?: { name: string, content: string }[]
 }
 
 interface SessionSummary {
@@ -37,6 +42,39 @@ interface CommandDefinition {
   body: string
 }
 
+// Euristica (non un classificatore ML: un semplice elenco di verbi con \b, in
+// linea con lo stile pragmatico già usato altrove nel codice, es.
+// looksLikeOllamaTag) per capire quando un messaggio in chat NORMALE sta
+// probabilmente chiedendo di scrivere/eseguire qualcosa — un caso reale:
+// "crea una cartella e scrivimi un progetto di backup" inviato senza Agent
+// Mode attivo ha prodotto solo codice a schermo, mai scritto su disco. Elenco
+// ampio IT+EN di verbi di creazione/modifica/esecuzione: meglio un falso
+// positivo occasionale (il banner si ignora con un click) che continuare a
+// perdere silenziosamente lavoro reale mai scritto.
+const WRITE_INTENT_PATTERN = new RegExp(
+  '\\b(' + [
+    // Italiano
+    'crea', 'creare', 'creami', 'scrivi', 'scrivimi', 'scrivere', 'genera', 'generare', 'generami',
+    'implementa', 'implementare', 'costruisci', 'costruire', 'sviluppa', 'sviluppare',
+    'aggiungi', 'aggiungere', 'modifica', 'modificare', 'correggi', 'correggere',
+    'sistema', 'sistemare', 'ripara', 'riparare', 'fixa', 'fixare', 'aggiusta', 'aggiustare',
+    'refactora', 'refactorizza', 'rimuovi', 'rimuovere', 'elimina', 'eliminare', 'cancella', 'cancellare',
+    'installa', 'installare', 'configura', 'configurare', 'esegui', 'eseguire',
+    'lancia', 'lanciare', 'avvia', 'avviare', 'patcha', 'patchare', 'aggiorna', 'aggiornare',
+    'pusha', 'pushare', 'committa', 'committare', 'pubblica', 'pubblicare',
+    'testa', 'testare', 'debugga', 'debuggare', 'ottimizza', 'ottimizzare',
+    'integra', 'integrare', 'collega', 'collegare', 'rinomina', 'rinominare',
+    'sposta', 'spostare', 'riscrivi', 'riscrivere', 'converti', 'convertire',
+    // English
+    'create', 'write', 'generate', 'implement', 'build', 'develop', 'add', 'modify', 'edit',
+    'fix', 'repair', 'patch', 'remove', 'delete', 'install', 'configure', 'setup', 'set up',
+    'run', 'execute', 'launch', 'start', 'deploy', 'push', 'commit', 'publish', 'test', 'debug',
+    'optimize', 'refactor', 'integrate', 'wire up', 'hook up', 'scaffold', 'rename', 'move',
+    'rewrite', 'convert'
+  ].join('|') + ')\\b',
+  'i'
+)
+
 const WELCOME_MESSAGE: Message = {
   id: '1',
   role: 'assistant',
@@ -53,9 +91,14 @@ interface AiChatProps {
   // così non resta un'operazione invisibile che l'utente deve fidarsi sia
   // avvenuta solo perché il modello lo dice a parole.
   onOpenFile?: (filePath: string) => void
+  // Apre un documento allegato (📎, testo già letto in memoria — non
+  // necessariamente dentro al progetto) in una scheda "virtuale" dell'editor,
+  // così è consultabile con un click invece di dover riaprire il file
+  // originale a mano dal proprio computer.
+  onOpenVirtualFile?: (name: string, content: string) => void
 }
 
-export default function AiChat({ currentFilePath, activeCode, currentProjectRoot, onOpenSettings, onOpenFile }: AiChatProps) {
+export default function AiChat({ currentFilePath, activeCode, currentProjectRoot, onOpenSettings, onOpenFile, onOpenVirtualFile }: AiChatProps) {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionList, setSessionList] = useState<SessionSummary[]>([])
@@ -73,6 +116,9 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('SELECTED_MODEL') || DEFAULT_MODEL)
   const [activeSkillsCount, setActiveSkillsCount] = useState(0)
   const [isAgentMode, setIsAgentMode] = useState(false)
+  // Banner "vuoi attivare Agent Mode?" in attesa di una scelta dell'utente —
+  // vedi WRITE_INTENT_PATTERN/handleSend.
+  const [pendingAgentModeSuggestion, setPendingAgentModeSuggestion] = useState(false)
   const [isDeepReasoning, setIsDeepReasoning] = useState(false)
   const [isPlanMode, setIsPlanMode] = useState(false)
   // Ricorda il prompt/contesto dell'ultimo piano generato, per poterlo rieseguire
@@ -250,11 +296,17 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     // "demone non avviato".
     getOllamaModels().then(names => {
       setOllamaModels(names)
-      // Sostituisce SOLO il default hardcoded mai scelto davvero dall'utente
-      // (né esplicitamente né ripristinato da una sessione precedente) — non
-      // il modello restaurato da localStorage, che va sempre rispettato anche
-      // se non è un tag Ollama (es. 'omniroute:auto', 'gpt-4o').
-      if (names.length > 0 && selectedModel === DEFAULT_MODEL && !names.includes(DEFAULT_MODEL)) {
+      // Sostituisce il default hardcoded mai scelto davvero dall'utente, MA
+      // anche un tag Ollama restaurato da localStorage che non esiste più in
+      // questa installazione — bug reale trovato dopo il fix di persistenza:
+      // se l'utente aveva selezionato 'qwen2.5:7b' e poi lo rimuove/reinstalla
+      // Ollama con un tag diverso, la vecchia selezione veniva preservata
+      // all'infinito (perché non è il DEFAULT_MODEL) e ogni richiesta falliva
+      // con 404 "model not found" senza che il menu lo segnalasse in alcun
+      // modo. Un modello NON-Ollama restaurato (es. 'omniroute:auto',
+      // 'gpt-4o') va sempre rispettato anche se non compare qui — questo
+      // controllo si applica SOLO a selezioni che sembrano davvero tag Ollama.
+      if (names.length > 0 && !names.includes(selectedModel) && (selectedModel === DEFAULT_MODEL || looksLikeOllamaTag(selectedModel))) {
         setSelectedModel(names[0])
       }
     })
@@ -309,8 +361,8 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     // Ascolta lo stream dell'agente
     // @ts-ignore
     const removeStream = window.ipcRenderer.on('agent-stream', (event, payload) => {
-      const { type, message } = payload
-      
+      const { type, message, taskFullyVerified } = payload
+
       const isFinal = type === 'done' || type === 'error' || type === 'plan'
 
       setMessages(prev => {
@@ -338,6 +390,22 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
         }
         return prev
       })
+
+      // Disattivazione AUTONOMA di Agent Mode a fine task, ma solo quando è
+      // DAVVERO verificato (taskFullyVerified, calcolato nell'harness da segnali
+      // reali — non toccato nulla, oppure l'ultimo get_diagnostics/
+      // run_and_verify_tests dopo l'ultima modifica è risultato pulito). Se il
+      // task si è fermato in errore, ha esaurito le iterazioni, o ha modificato
+      // codice senza mai verificarlo, resta acceso apposta: l'utente potrebbe
+      // dover correggere/continuare subito senza doverlo riattivare a mano.
+      if (type === 'done' && taskFullyVerified === true) {
+        setIsAgentMode(false)
+        setMessages(prev => [...prev, {
+          id: `agent-mode-autooff-${Date.now()}`,
+          role: 'assistant',
+          content: '✅ Task completato e verificato — Agent Mode disattivato automaticamente. Riattivalo per il prossimo task che richiede scrittura/esecuzione.'
+        }])
+      }
 
       if (isFinal) {
         setIsTyping(false)
@@ -409,7 +477,8 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
       id: Date.now().toString(),
       role: 'user',
       content: content.trim(),
-      images: images && images.length > 0 ? [...images] : undefined
+      images: images && images.length > 0 ? [...images] : undefined,
+      attachedDocs: attachedDocuments.length > 0 ? [...attachedDocuments] : undefined
     }
 
     setMessages(prev => [...prev, userMessage])
@@ -422,6 +491,23 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     // testo) — ma la bolla mostrata all'utente resta il comando così com'è
     // stato digitato, per chiarezza su cosa è stato effettivamente scritto.
     let effectivePrompt = userMessage.content
+
+    // Bug reale trovato con un test dal vivo: allegare un file/immagine SENZA
+    // scrivere nulla mandava al modello un turno utente vuoto — il contenuto
+    // allegato finiva comunque nel system prompt, ma senza alcuna domanda/
+    // istruzione esplicita molti modelli rispondono con un saluto generico
+    // ("Ciao! Come posso assisterti?"), ignorando di fatto l'allegato. Un
+    // prompt di default esplicito dà loro qualcosa di concreto da fare.
+    if (!effectivePrompt.trim()) {
+      if (attachedDocuments.length > 0 && !images?.length) {
+        effectivePrompt = attachedDocuments.length === 1
+          ? `Analizza il documento allegato (${attachedDocuments[0].name}) e riassumine il contenuto.`
+          : `Analizza i documenti allegati e riassumine il contenuto.`
+      } else if (images?.length) {
+        effectivePrompt = "Descrivi cosa vedi nell'immagine allegata."
+      }
+    }
+
     const slashMatch = userMessage.content.match(/^\/(\S+)\s*([\s\S]*)$/)
     if (slashMatch) {
       const matchedCommand = commandDefinitions.find(c => c.name === slashMatch[1])
@@ -601,7 +687,7 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     }
   }
 
-  const handleSend = () => {
+  const doSend = () => {
     const content = input
     const images = attachedImages
     setInput('')
@@ -610,6 +696,21 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     setPinnedFiles([])
     setMentionQuery(null)
     sendMessageContent(content, images)
+  }
+
+  const handleSend = () => {
+    // Suggerimento (non blocco definitivo): se il messaggio somiglia a una
+    // richiesta di scrittura/esecuzione ma Agent Mode è spento, mostra il
+    // banner invece di inviare subito — l'utente sceglie se attivarlo o
+    // proseguire comunque in chat normale (sola lettura, come sempre). Un
+    // secondo click su "Invia" (dopo aver visto il banner una volta) passa
+    // sempre, per non bloccare chi lo ignora deliberatamente.
+    if (!isAgentMode && !pendingAgentModeSuggestion && WRITE_INTENT_PATTERN.test(input)) {
+      setPendingAgentModeSuggestion(true)
+      return
+    }
+    setPendingAgentModeSuggestion(false)
+    doSend()
   }
 
   // Approva un piano: rilancia lo STESSO task (stesso prompt/contesto già investigato)
@@ -709,8 +810,19 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     setPinnedFiles(prev => prev.filter(f => f !== filePath))
   }
 
-  const handleCopyMessage = (content: string) => {
-    navigator.clipboard.writeText(content).catch(err => console.error('Copia fallita:', err))
+  // id del messaggio appena copiato: usato per mostrare un feedback visivo
+  // temporaneo (✅ "Copiato!") sul bottone cliccato, che prima non dava alcun
+  // riscontro — l'unico segnale che la copia fosse avvenuta era controllare
+  // manualmente gli appunti.
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+
+  const handleCopyMessage = (messageId: string, content: string) => {
+    navigator.clipboard.writeText(content)
+      .then(() => {
+        setCopiedMessageId(messageId)
+        setTimeout(() => setCopiedMessageId(prev => (prev === messageId ? null : prev)), 1500)
+      })
+      .catch(err => console.error('Copia fallita:', err))
   }
 
   const handleEditMessage = (messageId: string, content: string) => {
@@ -732,6 +844,15 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     sendMessageContent(content, images)
   }
 
+  // Elimina UN SOLO messaggio (prompt o risposta) senza toccare il resto
+  // della conversazione — a differenza di "+ Nuova" (inizia una chat
+  // completamente nuova) o di "modifica" (tronca tutto da quel punto in poi),
+  // qui l'utente ripulisce chirurgicamente un singolo scambio che non gli
+  // serve più, lasciando intatto il resto.
+  const handleDeleteMessage = (messageId: string) => {
+    setMessages(prev => prev.filter(m => m.id !== messageId))
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -750,11 +871,13 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   }
 
   // Estensioni di testo semplice che ha senso leggere per intero come
-  // contesto (codice, config, prosa) — un binario come .pdf/.docx letto con
-  // readAsText produrrebbe solo byte illeggibili spacciati per contenuto
-  // reale: meglio avvisare chiaramente che NON è supportato piuttosto che
-  // fingere di averlo letto e mandare spazzatura al modello.
+  // contesto (codice, config, prosa) — un binario letto con readAsText
+  // produrrebbe solo byte illeggibili spacciati per contenuto reale.
   const TEXT_DOC_EXTENSIONS = /\.(txt|md|markdown|json|csv|log|js|jsx|ts|tsx|py|html|css|scss|yml|yaml|xml|sh|env|toml|ini|sql|java|go|rs|c|cpp|h|swift|kt|rb|php)$/i
+  // .pdf/.docx non sono testo semplice: l'estrazione vera (pdf-parse/mammoth)
+  // richiede API Node non disponibili nel renderer, quindi il file grezzo
+  // viene inviato al processo main via IPC e il testo estratto torna qui.
+  const BINARY_DOC_EXTENSIONS = /\.(pdf|docx)$/i
 
   const attachFiles = (files: File[]) => {
     files.forEach(file => {
@@ -774,11 +897,29 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
           }
         }
         reader.readAsText(file)
+      } else if (BINARY_DOC_EXTENSIONS.test(file.name)) {
+        const reader = new FileReader()
+        reader.onload = async (ev) => {
+          if (!(ev.target?.result instanceof ArrayBuffer)) return
+          // @ts-ignore
+          const res = await window.ipcRenderer.invoke('extract-document-text', { fileName: file.name, buffer: ev.target.result })
+          if (res.ok) {
+            const content = res.warning ? `${res.text}\n\n[${res.warning}]` : res.text
+            setAttachedDocuments(prev => [...prev, { name: file.name, content }])
+          } else {
+            setMessages(prev => [...prev, {
+              id: `attach-warn-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              role: 'assistant',
+              content: `⚠️ Estrazione testo da "${file.name}" fallita: ${res.error}`
+            }])
+          }
+        }
+        reader.readAsArrayBuffer(file)
       } else {
         setMessages(prev => [...prev, {
           id: `attach-warn-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           role: 'assistant',
-          content: `⚠️ "${file.name}" non è supportato: solo immagini e file di testo semplice (.txt, .md, .json, codice, ecc.) possono essere allegati. PDF/Word richiederebbero un'estrazione del testo non ancora implementata.`
+          content: `⚠️ "${file.name}" non è supportato: solo immagini, file di testo semplice (.txt, .md, .json, codice, ecc.) e PDF/DOCX possono essere allegati.`
         }])
       }
     })
@@ -993,6 +1134,7 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
           <optgroup label="Audio nativo (conversazione vocale diretta col microfono 🎙️)">
             <option value="realtime:gpt-4o-realtime-preview">GPT-4o Realtime</option>
             <option value="realtime:gpt-4o-mini-realtime-preview">GPT-4o mini Realtime</option>
+            <option value="realtime:gemini-2.0-flash-live-001">Gemini Live</option>
           </optgroup>
           <optgroup label="Locali (server personalizzato)">
             <option value="local:custom">Server locale personalizzato (config. nelle Impostazioni)</option>
@@ -1026,18 +1168,25 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
             <option value="together:mistralai/Mixtral-8x22B-Instruct-v0.1">Mixtral 8x22B</option>
           </optgroup>
           <optgroup label="API Free / Open">
-            <option value="llama-3.3-70b-groq">Llama 3.3 70B (Groq)</option>
-            <option value="hf-inference-api">HF Inference API</option>
+            {/* Prima 'llama-3.3-70b-groq': nome inventato, mai un vero model
+                id Groq (che sono es. 'llama-3.3-70b-versatile') — 404
+                garantito ad ogni chiamata. */}
+            <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Groq)</option>
           </optgroup>
           <optgroup label="Commerciali (Fallback Avanzato)">
-            <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+            {/* Rimosse stanotte 4 voci morte, verificate leggendo il codice
+                reale di sendLLMRequest in services/llm.ts — nessuna aveva un
+                branch/endpoint che le raggiungesse davvero, fallivano SEMPRE:
+                'Claude 3.5 Sonnet' qui (Anthropic non è OpenAI-compatibile,
+                serve un client dedicato mai costruito — usa quello identico
+                già funzionante nel gruppo OpenRouter sopra), 'Z.ai', 'Sakana',
+                'HF Inference API' (nessuno dei tre aveva mai avuto un endpoint
+                configurato in questo file). */}
             <option value="gpt-4o">GPT-4o</option>
             <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
             <option value="grok-2">Grok (gtok)</option>
             <option value="qwen-max">Qwen Max</option>
             <option value="deepseek-coder">DeepSeek Coder</option>
-            <option value="z-ai">Z.ai</option>
-            <option value="sakana">Sakana</option>
             <option value="kimi-k3">Kimi k3</option>
           </optgroup>
         </select>
@@ -1122,6 +1271,20 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
               {msg.images && msg.images.map((img, i) => (
                 <img key={i} src={img} alt="attached" className="w-full rounded mb-2 object-cover max-h-48" />
               ))}
+              {msg.attachedDocs && msg.attachedDocs.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {msg.attachedDocs.map((doc, i) => (
+                    <button
+                      key={i}
+                      onClick={() => onOpenVirtualFile?.(doc.name, doc.content)}
+                      className="flex items-center gap-1 text-[11px] bg-black/20 hover:bg-black/30 px-2 py-1 rounded"
+                      title="Apri nell'editor"
+                    >
+                      📎 {doc.name}
+                    </button>
+                  ))}
+                </div>
+              )}
               {msg.content}
             </div>
             {msg.resolvedModel && (
@@ -1163,11 +1326,11 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
             {msg.role === 'user' && (
               <div className="flex gap-1 mt-1">
                 <button
-                  onClick={() => handleCopyMessage(msg.content)}
-                  className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-[#333]"
+                  onClick={() => handleCopyMessage(msg.id, msg.content)}
+                  className={`text-[10px] px-1.5 py-0.5 rounded hover:bg-[#333] transition-colors ${copiedMessageId === msg.id ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'}`}
                   title="Copia prompt"
                 >
-                  📋
+                  {copiedMessageId === msg.id ? '✅ Copiato' : '📋'}
                 </button>
                 <button
                   onClick={() => handleEditMessage(msg.id, msg.content)}
@@ -1184,6 +1347,13 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
                 >
                   🔁
                 </button>
+                <button
+                  onClick={() => handleDeleteMessage(msg.id)}
+                  className="text-[10px] text-gray-500 hover:text-red-400 px-1.5 py-0.5 rounded hover:bg-[#333]"
+                  title="Elimina questo messaggio"
+                >
+                  🗑️
+                </button>
               </div>
             )}
             {/* Copia risposta: prima esisteva SOLO sui messaggi utente (📋/✏️/🔁
@@ -1193,11 +1363,18 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
             {msg.role === 'assistant' && msg.id !== 'chat-tool-status' && msg.id !== 'agent-current' && msg.content && (
               <div className="flex gap-1 mt-1">
                 <button
-                  onClick={() => handleCopyMessage(msg.content)}
-                  className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-[#333]"
+                  onClick={() => handleCopyMessage(msg.id, msg.content)}
+                  className={`text-[10px] px-1.5 py-0.5 rounded hover:bg-[#333] transition-colors ${copiedMessageId === msg.id ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'}`}
                   title="Copia risposta"
                 >
-                  📋
+                  {copiedMessageId === msg.id ? '✅ Copiato' : '📋'}
+                </button>
+                <button
+                  onClick={() => handleDeleteMessage(msg.id)}
+                  className="text-[10px] text-gray-500 hover:text-red-400 px-1.5 py-0.5 rounded hover:bg-[#333]"
+                  title="Elimina questo messaggio"
+                >
+                  🗑️
                 </button>
               </div>
             )}
@@ -1275,6 +1452,30 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
             ))}
           </div>
         )}
+        {pendingAgentModeSuggestion && (
+          <div className="flex items-center gap-2 mb-2 p-2 bg-amber-900/30 border border-amber-700/50 rounded text-xs">
+            <span className="text-amber-300 flex-1">🤖 Questo messaggio sembra chiedere di scrivere/eseguire qualcosa — senza Agent Mode il modello può solo risponderti a parole, senza toccare davvero i file.</span>
+            <button
+              onClick={() => { setIsAgentMode(true); setPendingAgentModeSuggestion(false); doSend() }}
+              className="shrink-0 px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded"
+            >
+              Attiva e invia
+            </button>
+            <button
+              onClick={() => { setPendingAgentModeSuggestion(false); doSend() }}
+              className="shrink-0 px-2 py-1 bg-[#37373d] hover:bg-[#4d4d54] text-gray-300 rounded"
+            >
+              Invia comunque
+            </button>
+            <button
+              onClick={() => setPendingAgentModeSuggestion(false)}
+              className="shrink-0 text-gray-500 hover:text-gray-300 px-1"
+              title="Chiudi"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <div className="relative">
           {mentionQuery !== null && filteredMentionFiles.length > 0 && (
             <div className="absolute bottom-full left-0 mb-1 w-full max-h-40 overflow-y-auto bg-[#252526] border border-[#444] rounded shadow-lg z-10">
@@ -1317,7 +1518,7 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.js,.jsx,.ts,.tsx,.py,.html,.css,.scss,.yml,.yaml,.xml,.sh,.env,.toml,.ini,.sql,.java,.go,.rs,.c,.cpp,.h,.swift,.kt,.rb,.php"
+            accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.js,.jsx,.ts,.tsx,.py,.html,.css,.scss,.yml,.yaml,.xml,.sh,.env,.toml,.ini,.sql,.java,.go,.rs,.c,.cpp,.h,.swift,.kt,.rb,.php,.pdf,.docx"
             onChange={handleFileInputChange}
             className="hidden"
           />

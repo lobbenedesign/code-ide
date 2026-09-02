@@ -25,7 +25,7 @@ export function appendAgentEvent(message: string) {
  * concorrenti (es. uno dalla chat desktop, uno da un messaggio Telegram) non si
  * mischiano e una risposta non finisce mai nella chat sbagliata.
  */
-export function broadcastAgentStream(mainWindow: BrowserWindow | null, payload: { type: string; message: string }, runId?: string) {
+export function broadcastAgentStream(mainWindow: BrowserWindow | null, payload: { type: string; message: string; taskFullyVerified?: boolean }, runId?: string) {
   mainWindow?.webContents.send('agent-stream', { ...payload, runId })
   appendAgentEvent(payload.message)
 }

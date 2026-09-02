@@ -125,6 +125,50 @@ function getMaxCallsPerRun(): number {
   return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_MAX_CALLS_PER_RUN
 }
 
+// Chiamata effettiva a OmniRoute — usata sia dal branch esplicito
+// 'omniroute:' sia dal fallback generico. Ritorna null quando la risposta è
+// ok ma senza una scelta valida (formato inatteso), altrimenti lascia
+// propagare l'eccezione di fetch/rete al chiamante.
+async function callOmniRoute(omniBaseUrl: string, model: string, params: ChatCompletionParams): Promise<ChatCompletionResult | null> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (process.env.OMNIROUTE_API_KEY) {
+    headers['Authorization'] = `Bearer ${process.env.OMNIROUTE_API_KEY}`
+  }
+
+  const response = await fetch(`${omniBaseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      messages: toOpenAIMessages(params.messages),
+      tools: params.tools,
+      stream: false,
+      ...(params.temperature !== undefined ? { temperature: params.temperature } : {})
+    })
+  })
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '')
+    throw new Error(`OmniRoute ha risposto con errore ${response.status}: ${errBody.slice(0, 300)}`)
+  }
+
+  const data = await response.json()
+  const choice = data.choices?.[0]?.message
+  if (!choice) return null
+
+  if (data.usage) {
+    recordUsage(model, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0)
+  }
+  return {
+    message: {
+      role: choice.role || 'assistant',
+      content: choice.content || '',
+      tool_calls: choice.tool_calls
+    },
+    resolvedModel: typeof data.model === 'string' ? data.model : undefined
+  }
+}
+
 /**
  * Punto unico di chiamata al modello per l'harness agentico (harness.ts,
  * deepReasoning.ts, SubagentPlugin.ts). Se OmniRoute è pronto instrada la
@@ -167,60 +211,59 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
     return callOpenAICompatible(OPENROUTER_BASE_URL, params.model.slice('openrouter:'.length), params.messages, params.tools, process.env.OPENROUTER_API_KEY)
   }
 
+  // OmniRoute — modelli scelti nel menu con prefisso esplicito 'omniroute:'
+  // (es. 'omniroute:auto'). Trovato un bug reale: senza questo branch il
+  // prefisso non veniva mai tolto, quindi il modello inviato letteralmente
+  // era 'omniroute:auto' — OmniRoute non lo riconosce (si aspetta solo
+  // 'auto'), la chiamata falliva, e siccome quella stringa combacia col
+  // pattern \w+:\w+ di looksLikeOllamaTag il codice ricadeva sul fallback
+  // Ollama, che rispondeva 404 "model 'omniroute:auto' not found" — un
+  // crash dell'harness anche con OmniRoute perfettamente funzionante e
+  // selezionato esplicitamente dall'utente. Qui, a differenza del fallback
+  // generico sotto, un fallimento è un errore vero (l'utente ha scelto
+  // OmniRoute apposta), non un fallback silenzioso su Ollama.
+  if (params.model.startsWith('omniroute:')) {
+    const omniBaseUrl = getOmniRouteBaseUrl()
+    if (!omniBaseUrl) {
+      throw new Error("OmniRoute non è pronto (badge in basso nella chat, o riprova dalle Impostazioni).")
+    }
+    const result = await callOmniRoute(omniBaseUrl, params.model.slice('omniroute:'.length), params)
+    if (!result) {
+      throw new Error('OmniRoute ha risposto in modo inatteso (nessuna scelta nella risposta).')
+    }
+    return result
+  }
+
+  // Un tag Ollama (es. 'qwen2.5-coder:7b') va SEMPRE diretto a Ollama, senza
+  // passare prima da OmniRoute — trovato con un vero test dal vivo: OmniRoute
+  // non sa cosa farsene di un tag Ollama locale (risponde 400 "Unable to
+  // determine provider"), quindi quel tentativo falliva SEMPRE per questi
+  // modelli, aggiungendo una latenza di rete inutile ad ogni singola chiamata
+  // prima di ricadere comunque su Ollama. Per un modello non-Ollama, invece,
+  // OmniRoute resta l'unica via (nessun downgrade di comportamento qui sotto).
+  if (looksLikeOllamaTag(params.model)) {
+    return callOllamaDirect(params)
+  }
+
   const omniBaseUrl = getOmniRouteBaseUrl()
 
   if (omniBaseUrl) {
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (process.env.OMNIROUTE_API_KEY) {
-        headers['Authorization'] = `Bearer ${process.env.OMNIROUTE_API_KEY}`
-      }
-
-      const response = await fetch(`${omniBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: params.model,
-          messages: toOpenAIMessages(params.messages),
-          tools: params.tools,
-          stream: false,
-          ...(params.temperature !== undefined ? { temperature: params.temperature } : {})
-        })
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        const choice = data.choices?.[0]?.message
-        if (choice) {
-          if (data.usage) {
-            recordUsage(params.model, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0)
-          }
-          return {
-            message: {
-              role: choice.role || 'assistant',
-              content: choice.content || '',
-              tool_calls: choice.tool_calls
-            },
-            resolvedModel: typeof data.model === 'string' ? data.model : undefined
-          }
-        }
-      } else {
-        console.warn(`[llmClient] OmniRoute ha risposto ${response.status}, fallback su Ollama locale.`)
-      }
+      const result = await callOmniRoute(omniBaseUrl, params.model, params)
+      if (result) return result
     } catch (err: any) {
-      console.warn('[llmClient] OmniRoute non raggiungibile, fallback su Ollama locale:', err.message)
+      console.warn('[llmClient] OmniRoute non raggiungibile:', err.message)
     }
   }
 
-  if (!looksLikeOllamaTag(params.model)) {
-    throw new Error(
-      `Il modello '${params.model}' non è un tag Ollama e OmniRoute non è disponibile: non c'è modo di raggiungerlo da questo processo ` +
-      `(le chiavi API dei singoli provider vivono solo nel localStorage della chat desktop, non nel processo Agent Mode). ` +
-      `Avvia/installa OmniRoute (badge in alto nella chat AI) oppure scegli un modello Ollama installato localmente.`
-    )
-  }
+  throw new Error(
+    `Il modello '${params.model}' non è un tag Ollama e OmniRoute non è disponibile: non c'è modo di raggiungerlo da questo processo ` +
+    `(le chiavi API dei singoli provider vivono solo nel localStorage della chat desktop, non nel processo Agent Mode). ` +
+    `Avvia/installa OmniRoute (badge in alto nella chat AI) oppure scegli un modello Ollama installato localmente.`
+  )
+}
 
-  // Fallback: chiamata diretta a Ollama locale, solo per modelli effettivamente Ollama
+async function callOllamaDirect(params: ChatCompletionParams): Promise<ChatCompletionResult> {
   let response: Response
   try {
     response = await fetch('http://127.0.0.1:11434/api/chat', {

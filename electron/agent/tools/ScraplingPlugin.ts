@@ -3,6 +3,7 @@ import { promisify } from 'util'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { ensureScraplingReady } from '../../services/scraplingService'
 
 const execAsync = promisify(exec)
 
@@ -10,7 +11,7 @@ export const ScraplingToolDefinition = {
   type: 'function' as const,
   function: {
     name: 'fetch_webpage',
-    description: "Scarica il contenuto REALE di una pagina web specifica (documentazione ufficiale, un file README su GitHub, una domanda su Stack Overflow) usando Scrapling, che gestisce anche pagine protette da Cloudflare/anti-bot. A differenza di 'web_search' (che restituisce una risposta sintetizzata da Perplexity), questo tool legge il contenuto grezzo di UNA pagina che conosci già l'URL. Richiede 'scrapling' installato sul sistema (pip install \"scrapling[fetchers]\" && scrapling install).",
+    description: "Scarica il contenuto REALE di una pagina web specifica (documentazione ufficiale, un file README su GitHub, una domanda su Stack Overflow) usando Scrapling, che gestisce anche pagine protette da Cloudflare/anti-bot. A differenza di 'web_search' (che restituisce una risposta sintetizzata da Perplexity), questo tool legge il contenuto grezzo di UNA pagina che conosci già l'URL. Se Scrapling non è ancora installato, al primo utilizzo l'installazione parte AUTOMATICAMENTE in background (nessuna azione manuale richiesta) — se risponde che è in corso, informane l'utente invece di ritentare subito in loop.",
     parameters: {
       type: 'object',
       properties: {
@@ -22,24 +23,14 @@ export const ScraplingToolDefinition = {
   }
 }
 
-async function isScraplingInstalled(): Promise<boolean> {
-  try {
-    await execAsync('scrapling --version')
-    return true
-  } catch {
-    return false
-  }
-}
-
 export async function executeFetchWebpage(args: { url: string; stealthy?: boolean }): Promise<string> {
-  if (!(await isScraplingInstalled())) {
-    return "Errore: 'scrapling' non è installato su questo sistema. Per abilitare questo tool, l'utente deve eseguire manualmente: pip install \"scrapling[fetchers]\" && scrapling install (scarica anche i browser necessari). Non tentare di installarlo automaticamente."
-  }
+  const status = await ensureScraplingReady()
+  if (!status.ready) return status.message
 
   const outFile = path.join(os.tmpdir(), `scrapling-${Date.now()}.md`)
   const subcommand = args.stealthy ? 'stealthy-fetch' : 'fetch'
   const stealthFlag = args.stealthy ? ' --solve-cloudflare' : ''
-  const command = `scrapling extract ${subcommand} "${args.url}" "${outFile}"${stealthFlag}`
+  const command = `"${status.binPath}" extract ${subcommand} "${args.url}" "${outFile}"${stealthFlag}`
 
   try {
     await execAsync(command, { timeout: 60000 })

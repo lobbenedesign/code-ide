@@ -116,11 +116,52 @@ function App() {
 
       // Applica l'evidenziazione al prossimo tick, quando Monaco ha già il nuovo valore montato
       setTimeout(() => highlightChangedLines(changedLines), 50)
+
+      // Aggiorna ESPLORA RISORSE: un file NUOVO creato dall'agente (non solo
+      // modificato) prima non compariva nella sidebar finché non si usciva e
+      // rientrava nella cartella — 'files' viene popolato una volta sola
+      // all'apertura del progetto, mai ricaricato dopo una scrittura reale.
+      // Ricaricare la cartella corrente è economico (una sola lettura di
+      // directory) ed è corretto anche quando il file scritto sta in una
+      // sottocartella non mostrata qui: non fa differenza, ricarica comunque
+      // solo il livello attualmente visibile.
+      if (currentDirRef.current) loadDirectory(currentDirRef.current)
     })
 
     return () => {
       // @ts-ignore
       if (removeAgentFileWrite && typeof removeAgentFileWrite === 'function') removeAgentFileWrite()
+    }
+  }, [])
+
+  useEffect(() => {
+    // Cancellazioni/spostamenti/creazione cartelle dell'agente (delete_file,
+    // delete_folder, move_file, create_folder) — stesso problema del file-write:
+    // ESPLORA RISORSE non si aggiornava da sola, e in più un file cancellato o
+    // spostato restava aperto in scheda come se esistesse ancora.
+    // @ts-ignore
+    const removeFsChange = window.ipcRenderer.on('agent-fs-change', (_evt: any, payload: any) => {
+      const { kind, cwd, path: relPath, oldPath, newPath } = payload
+      const toAbs = (p: string) => (p.startsWith('/') || /^[a-zA-Z]:\\/.test(p) ? p : joinPath(cwd || currentDirRef.current, p))
+
+      if (kind === 'delete-file') {
+        closeTab(toAbs(relPath))
+      } else if (kind === 'delete-folder') {
+        const abs = toAbs(relPath)
+        setOpenTabs(prev => prev.filter(t => !t.path.startsWith(abs + '/')))
+      } else if (kind === 'move-file') {
+        const oldAbs = toAbs(oldPath)
+        const newAbs = toAbs(newPath)
+        setOpenTabs(prev => prev.map(t => t.path === oldAbs ? { ...t, path: newAbs } : t))
+        setActiveTabPath(prev => prev === oldAbs ? newAbs : prev)
+      }
+
+      if (currentDirRef.current) loadDirectory(currentDirRef.current)
+    })
+
+    return () => {
+      // @ts-ignore
+      if (removeFsChange && typeof removeFsChange === 'function') removeFsChange()
     }
   }, [])
 
@@ -306,6 +347,19 @@ function App() {
       }
       return next
     })
+  }
+
+  // Apre un documento allegato in chat (📎, testo già in memoria — non
+  // necessariamente un file reale del progetto) in una scheda "virtuale":
+  // niente IPC 'read-file' verso il disco, il contenuto è già quello
+  // effettivamente inviato al modello. Percorso prefissato 'attached:' per
+  // non collidere mai con un vero percorso di progetto.
+  const openVirtualTab = (name: string, content: string) => {
+    const virtualPath = `attached:${name}`
+    const existing = openTabs.find(t => t.path === virtualPath)
+    if (existing) { setActiveTabPath(virtualPath); return }
+    setOpenTabs(prev => [...prev, { path: virtualPath, content, isDirty: false }])
+    setActiveTabPath(virtualPath)
   }
 
   const updateActiveTabContent = (value: string) => {
@@ -570,7 +624,7 @@ function App() {
             Terminale
           </div>
           <div className="flex-1 min-h-0">
-            <Terminal />
+            <Terminal cwd={currentDir} />
           </div>
         </div>
       </div>
@@ -582,6 +636,7 @@ function App() {
         currentProjectRoot={currentDir}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenFile={loadFile}
+        onOpenVirtualFile={openVirtualTab}
       />
     </div>
   )

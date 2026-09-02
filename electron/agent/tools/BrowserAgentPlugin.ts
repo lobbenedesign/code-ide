@@ -1,4 +1,4 @@
-import { navigateBrowser, screenshotBrowser, evalInBrowser, clickInBrowser } from '../../services/browserAgent'
+import { navigateBrowser, screenshotBrowser, evalInBrowser, clickInBrowser, smartLocateBrowser, solveCloudflareTurnstile } from '../../services/browserAgent'
 
 export const BrowserToolDefinitions = [
   {
@@ -47,6 +47,30 @@ export const BrowserToolDefinitions = [
         required: ['x', 'y']
       }
     }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'browser_smart_locate',
+      description: "Ritrova un elemento nella pagina anche se il selettore CSS usato prima non combacia più (es. dopo un hot-reload che ha cambiato l'HTML) — algoritmo di similarità (tag/testo/attributi) studiato da D4Vinci/Scrapling, non un semplice retry del selettore. Usalo quando 'browser_eval'/'browser_click' con un vecchio selettore falliscono inaspettatamente, invece di rifare uno 'browser_screenshot' e indovinare nuove coordinate a mano.",
+      parameters: {
+        type: 'object',
+        properties: {
+          previousSelector: { type: 'string', description: 'Il selettore CSS che funzionava prima e ora sospetti non funzioni più (provato per primo come scorciatoia).' },
+          tagName: { type: 'string', description: "Tag HTML atteso dell'elemento (es. 'button'), se noto." },
+          text: { type: 'string', description: "Testo visibile atteso dell'elemento, se noto." },
+          attributes: { type: 'object', description: "Attributi attesi come coppie chiave/valore (es. {\"class\": \"btn-primary\", \"data-testid\": \"submit\"}), se noti." }
+        }
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'browser_solve_cloudflare',
+      description: "Tenta di superare una sfida Cloudflare Turnstile (la checkbox 'Verifica che sei un umano') sulla pagina attualmente caricata, cliccandola con un ritardo/offset casuali — tecnica studiata da D4Vinci/Scrapling. Non garantita: Cloudflare può comunque bloccare in base ad altri segnali di rischio. Usa 'browser_screenshot' dopo per verificare l'esito.",
+      parameters: { type: 'object', properties: {} }
+    }
   }
 ]
 
@@ -60,6 +84,10 @@ export async function executeBrowserTool(functionName: string, args: any, cwd: s
       return evalInBrowser(args.code)
     case 'browser_click':
       return clickInBrowser(args.x, args.y)
+    case 'browser_smart_locate':
+      return smartLocateBrowser({ previousSelector: args.previousSelector, tagName: args.tagName, text: args.text, attributes: args.attributes })
+    case 'browser_solve_cloudflare':
+      return solveCloudflareTurnstile()
     default:
       return `Strumento browser non riconosciuto: ${functionName}`
   }

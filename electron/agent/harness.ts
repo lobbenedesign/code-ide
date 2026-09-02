@@ -12,11 +12,16 @@ import { ScraplingToolDefinition, executeFetchWebpage } from './tools/ScraplingP
 import { RepoMapToolDefinition, executeGetRepoMap } from './tools/RepoMapPlugin'
 import { ReadFileToolDefinition, executeReadFile } from './tools/ReadFilePlugin'
 import { PatchFileToolDefinition, executePatchFile } from './tools/PatchFilePlugin'
+import { DeleteFileToolDefinition, executeDeleteFile } from './tools/DeleteFilePlugin'
+import { CreateFolderToolDefinition, executeCreateFolder } from './tools/CreateFolderPlugin'
+import { MoveFileToolDefinition, executeMoveFile } from './tools/MoveFilePlugin'
+import { DeleteFolderToolDefinition, executeDeleteFolder } from './tools/DeleteFolderPlugin'
+import { OcrToolDefinition, executeOcrImage } from './tools/OcrPlugin'
 import { BrowserToolDefinitions, executeBrowserTool } from './tools/BrowserAgentPlugin'
 import { DiagnosticsToolDefinition, executeGetDiagnostics } from './tools/DiagnosticsPlugin'
 import { TodoToolDefinition, executeWriteTodos } from './tools/TodoPlugin'
 import { GenerateImageToolDefinition, executeGenerateImage } from './tools/InvokeAIPlugin'
-import { beginCheckpoint, snapshotFileIfNeeded, finalizeCheckpoint } from '../services/checkpointStore'
+import { beginCheckpoint, snapshotFileIfNeeded, snapshotFolderIfNeeded, finalizeCheckpoint } from '../services/checkpointStore'
 import { compactMessagesIfNeeded } from './contextCompactor'
 import { ensureMcpServersConnected, getMcpToolDefinitions, executeMcpTool, isMcpToolName } from '../services/mcpClient'
 import { checkToolCallAllowed } from './permissions'
@@ -47,6 +52,8 @@ const READ_ONLY_TOOLS = [
   BrowserToolDefinitions[0], // browser_navigate
   BrowserToolDefinitions[1], // browser_screenshot
   BrowserToolDefinitions[2], // browser_eval
+  BrowserToolDefinitions[4], // browser_smart_locate (sola lettura: individua, non agisce)
+  OcrToolDefinition,
   DiagnosticsToolDefinition,
   // write_todos non tocca mai il filesystem: è solo bookkeeping/status del
   // proprio piano, sicuro anche in Plan Mode.
@@ -64,9 +71,38 @@ const WRITE_TOOLS = [
   GitHubToolDefinition,
   TestPluginToolDefinition,
   PatchFileToolDefinition,
+  DeleteFileToolDefinition,
+  CreateFolderToolDefinition,
+  MoveFileToolDefinition,
+  DeleteFolderToolDefinition,
   BrowserToolDefinitions[3], // browser_click
+  BrowserToolDefinitions[5], // browser_solve_cloudflare (esegue un click reale)
   GenerateImageToolDefinition
 ]
+
+// Riconosce un tentativo di tool-call scritto come testo semplice (invece di
+// popolare il campo strutturato 'tool_calls' dell'API) e lo converte nella
+// stessa forma {id, function:{name, arguments}} che il resto dell'harness già
+// sa gestire. Deliberatamente conservativo: richiede che il nome combaci con
+// un tool DAVVERO disponibile in questo run — altrimenti un testo qualsiasi
+// che per caso somiglia a JSON verrebbe eseguito come comando, un rischio
+// inaccettabile per un harness che scrive/esegue in autonomia.
+function tryRecoverToolCallFromText(content: string, availableTools: any[]): { id: string, function: { name: string, arguments: any } } | null {
+  if (!content) return null
+  const match = content.match(/\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}/)
+  if (!match) return null
+
+  const toolNames = new Set(availableTools.map(t => t.function.name))
+  if (!toolNames.has(match[1])) return null
+
+  try {
+    const parsed = JSON.parse(match[0])
+    if (!parsed.name || !toolNames.has(parsed.name)) return null
+    return { id: `recovered-${Date.now()}`, function: { name: parsed.name, arguments: parsed.arguments ?? {} } }
+  } catch {
+    return null
+  }
+}
 
 export async function runAgenticTask(
   mainWindow: BrowserWindow,
@@ -110,6 +146,7 @@ export async function runAgenticTask(
   let injectedSystemPrompt = systemPrompt
     + "\n\nSe il task richiede 3 o più passi distinti, usa il tool 'write_todos' per dichiarare il piano all'inizio e aggiornarne lo stato (pending/in_progress/completed) man mano che procedi — l'utente lo vede in tempo reale."
     + "\n\nHai ricevuto solo un ALBERO di cartelle e file (percorsi, nessun contenuto): NON conosci cosa c'è dentro nessun file finché non lo leggi davvero. Prima di affermare cosa fa o contiene un file, o prima di modificarlo, usa SEMPRE 'read_file' (per un file specifico già individuato) o 'search_codebase' (per trovare dove si trova qualcosa) — non indovinare mai il contenuto dal solo nome o percorso del file."
+    + (planMode ? '' : "\n\nHai accesso REALE a 'run_terminal_command', 'delete_file', 'delete_folder', 'create_folder' e 'move_file' — se un'azione richiesta si può fare con uno di questi tool (creare/spostare/eliminare file o cartelle, installare pacchetti, eseguire uno script, ecc.), ESEGUILA TU con il tool giusto. Non dire mai all'utente 'apri il terminale e digita X' o 'usa il comando Y' quando potresti eseguirlo tu stesso in questo turno — è un'azione mancata, non una risposta corretta.")
   if (memories.length > 0) {
     injectedSystemPrompt += '\n\n[MEMORIE DI PROGETTO - REGOLE FISSE]\n'
     memories.forEach(m => {
@@ -163,6 +200,18 @@ export async function runAgenticTask(
   // quello richiesto.
   let resolvedModelAnnounced = false
 
+  // Traccia se il task ha DAVVERO finito ogni suo step incluse verifica e
+  // debug, per decidere se disattivare Agent Mode da soli a fine run (vedi
+  // sotto, dove viene trasmesso come 'taskFullyVerified'). Euristica concreta,
+  // non un'opinione del modello: 'filesModified' diventa true al primo
+  // edit_file/patch_file; 'verifiedClean' viene azzerato a ogni nuova modifica
+  // (una modifica appena fatta non è ancora verificata) e impostato a
+  // true/false dal risultato REALE dell'ultimo get_diagnostics/
+  // run_and_verify_tests eseguito dopo. Se il codice non è mai stato toccato,
+  // non c'è nulla da verificare: il task è comunque considerato concluso.
+  let filesModified = false
+  let verifiedClean: boolean | null = null
+
   while (!isTaskComplete && iterations < maxIterations) {
     iterations++
 
@@ -183,6 +232,22 @@ export async function runAgenticTask(
       if (!resolvedModelAnnounced && result.resolvedModel && result.resolvedModel !== model) {
         resolvedModelAnnounced = true
         broadcastAgentStream(mainWindow, { type: 'status', message: `[🔀 OmniRoute ha instradato "${model}" verso: ${result.resolvedModel}]` }, runId)
+      }
+
+      // Trovato con un vero test dal vivo: alcuni modelli locali deboli nel
+      // tool-calling (es. qwen2.5-coder:7b via Ollama) scrivono la chiamata
+      // a un tool come TESTO JSON nel campo 'content' invece di popolare
+      // davvero 'tool_calls' — l'harness la trattava come una risposta finale
+      // a testo normale, dichiarando il task "completato" senza aver MAI
+      // eseguito nulla. Se il contenuto sembra un tentativo di chiamata a un
+      // tool reale, lo intercettiamo e lo eseguiamo comunque invece di
+      // fingere che sia una risposta valida.
+      const recoveredToolCall = (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0)
+        ? tryRecoverToolCallFromText(assistantMessage.content, tools)
+        : null
+      if (recoveredToolCall) {
+        broadcastAgentStream(mainWindow, { type: 'status', message: `[⚠️ Il modello ha scritto la chiamata a '${recoveredToolCall.function.name}' come testo invece che come tool-calling reale — eseguita comunque]` }, runId)
+        assistantMessage.tool_calls = [recoveredToolCall]
       }
 
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
@@ -208,6 +273,8 @@ export async function runAgenticTask(
           await eccEngine.dispatch('PreToolUse', functionName, parsedArgs);
 
           if (functionName === 'edit_file') {
+            filesModified = true
+            verifiedClean = null // una scrittura nuova rende non valida qualunque verifica precedente
             broadcastAgentStream(mainWindow, { type: 'status', message: `[📝 Scrittura file in corso: ${parsedArgs.filePath}]` }, runId)
             // Notifica il renderer PRIMA di scrivere: apre/porta in primo piano la scheda
             // del file che l'agente sta per modificare, così l'utente lo vede aprirsi.
@@ -241,6 +308,7 @@ export async function runAgenticTask(
           } else if (functionName === 'run_and_verify_tests') {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🧪 Esecuzione Test TDD in corso...]` }, runId)
             toolResult = await executeTestVerify(parsedArgs, cwd)
+            verifiedClean = toolResult.startsWith('TESTS PASSED')
           } else if (functionName === 'invoke_subagent') {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🤖 Invocazione Sub-Agente: ${parsedArgs.agentRole}...]` }, runId)
             toolResult = await executeSubagent(parsedArgs, model, cwd)
@@ -257,6 +325,8 @@ export async function runAgenticTask(
             broadcastAgentStream(mainWindow, { type: 'status', message: `[👁️ Lettura file: ${parsedArgs.filePath}]` }, runId)
             toolResult = await executeReadFile(parsedArgs, cwd)
           } else if (functionName === 'patch_file') {
+            filesModified = true
+            verifiedClean = null
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🩹 Patch file: ${parsedArgs.filePath}]` }, runId)
             mainWindow.webContents.send('agent-file-write', { filePath: parsedArgs.filePath, cwd, phase: 'start', runId })
             if (checkpointsEnabled) snapshotFileIfNeeded(cwd, runId as string, parsedArgs.filePath)
@@ -270,12 +340,47 @@ export async function runAgenticTask(
             } catch {
               // Se non riusciamo a rileggerlo per l'anteprima, la patch è comunque già stata applicata su disco.
             }
+          } else if (functionName === 'delete_file') {
+            broadcastAgentStream(mainWindow, { type: 'status', message: `[🗑️ Eliminazione file: ${parsedArgs.filePath}]` }, runId)
+            if (checkpointsEnabled) snapshotFileIfNeeded(cwd, runId as string, parsedArgs.filePath)
+            toolResult = await executeDeleteFile(parsedArgs, cwd)
+            mainWindow.webContents.send('agent-fs-change', { kind: 'delete-file', path: parsedArgs.filePath, cwd, runId })
+          } else if (functionName === 'create_folder') {
+            broadcastAgentStream(mainWindow, { type: 'status', message: `[📁 Creazione cartella: ${parsedArgs.folderPath}]` }, runId)
+            toolResult = await executeCreateFolder(parsedArgs, cwd)
+            mainWindow.webContents.send('agent-fs-change', { kind: 'create-folder', path: parsedArgs.folderPath, cwd, runId })
+          } else if (functionName === 'move_file') {
+            broadcastAgentStream(mainWindow, { type: 'status', message: `[📦 Spostamento file: ${parsedArgs.sourcePath} → ${parsedArgs.destinationPath}]` }, runId)
+            if (checkpointsEnabled) {
+              snapshotFileIfNeeded(cwd, runId as string, parsedArgs.sourcePath)
+              snapshotFileIfNeeded(cwd, runId as string, parsedArgs.destinationPath)
+            }
+            toolResult = await executeMoveFile(parsedArgs, cwd)
+            mainWindow.webContents.send('agent-fs-change', { kind: 'move-file', oldPath: parsedArgs.sourcePath, newPath: parsedArgs.destinationPath, cwd, runId })
+          } else if (functionName === 'delete_folder') {
+            broadcastAgentStream(mainWindow, { type: 'status', message: `[🗑️ Eliminazione cartella: ${parsedArgs.folderPath}]` }, runId)
+            if (checkpointsEnabled) snapshotFolderIfNeeded(cwd, runId as string, parsedArgs.folderPath)
+            toolResult = await executeDeleteFolder(parsedArgs, cwd)
+            mainWindow.webContents.send('agent-fs-change', { kind: 'delete-folder', path: parsedArgs.folderPath, cwd, runId })
           } else if (functionName.startsWith('browser_')) {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🌐 ${functionName}: ${JSON.stringify(parsedArgs)}]` }, runId)
             toolResult = await executeBrowserTool(functionName, parsedArgs, cwd)
           } else if (functionName === 'get_diagnostics') {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🩺 Analisi tipi: ${parsedArgs.filePath}]` }, runId)
             toolResult = await executeGetDiagnostics(parsedArgs, cwd)
+            verifiedClean = toolResult.startsWith('✅')
+          } else if (functionName === 'ocr_image') {
+            broadcastAgentStream(mainWindow, { type: 'status', message: `[🔍 OCR: ${parsedArgs.imagePath}]` }, runId)
+            toolResult = await executeOcrImage(parsedArgs, cwd)
+            // Il testo estratto va mostrato DAVVERO nell'editor centrale, non
+            // solo raccontato in chat — riusa lo stesso evento di edit_file/
+            // patch_file (apre/aggiorna una scheda) su un file "virtuale"
+            // <immagine>.ocr.txt: non scritto su disco, solo un modo di
+            // riusare la UI già esistente per mostrare un contenuto testuale.
+            if (toolResult.startsWith('📄')) {
+              const ocrText = toolResult.replace(/^📄 Testo estratto da [^\n]*\n\n/, '')
+              mainWindow.webContents.send('agent-file-write', { filePath: `${parsedArgs.imagePath}.ocr.txt`, cwd, phase: 'done', content: ocrText, runId })
+            }
           } else if (functionName === 'write_todos') {
             toolResult = await executeWriteTodos(parsedArgs, mainWindow, runId)
           } else if (functionName === 'generate_image') {
@@ -306,7 +411,13 @@ export async function runAgenticTask(
         // L'agente ha finito e risponde a testo
         isTaskComplete = true
         finalResponse = assistantMessage.content
-        broadcastAgentStream(mainWindow, { type: planMode ? 'plan' : 'done', message: finalResponse }, runId)
+        // 'taskFullyVerified' guida la disattivazione automatica di Agent Mode
+        // lato renderer (AiChat.tsx): vero se il codice non è mai stato toccato
+        // in questo run, oppure se è stato toccato E l'ultima verifica reale
+        // (get_diagnostics/run_and_verify_tests) dopo l'ultima modifica è
+        // risultata pulita. Non usato in Plan Mode (nessuna scrittura possibile).
+        const taskFullyVerified = planMode ? undefined : (!filesModified || verifiedClean === true)
+        broadcastAgentStream(mainWindow, { type: planMode ? 'plan' : 'done', message: finalResponse, taskFullyVerified }, runId)
       }
 
     } catch (error: any) {

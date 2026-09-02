@@ -3,11 +3,10 @@
 // rimosso perché non capiva l'italiano). Selezionati dal menu modelli con
 // prefisso 'realtime:' — lo stesso pattern già usato per 'openrouter:'/'together:'.
 //
-// Al momento è implementato solo il provider OpenAI Realtime (WebRTC, il
-// protocollo con la latenza più bassa e che non richiede parsing manuale di
-// chunk PCM: WebRTC gestisce l'encode/decode audio da solo). Gemini Live
-// (WebSocket, framing PCM16 manuale) NON è ancora implementato: se selezionato
-// il pannello mostra un messaggio chiaro invece di fingere che funzioni.
+// OpenAI Realtime usa WebRTC (il browser gestisce da solo encode/decode
+// audio). Gemini Live usa invece un WebSocket con framing PCM16 manuale
+// (16kHz in ingresso, 24kHz in uscita, base64 dentro buste JSON) — più lavoro
+// da fare a mano nel renderer, implementato in NativeAudioPanel.tsx.
 export type NativeAudioProvider = 'openai-realtime' | 'gemini-live'
 
 export interface NativeAudioModelInfo {
@@ -21,7 +20,7 @@ const REALTIME_PREFIX = 'realtime:'
 const NATIVE_AUDIO_CATALOG: Record<string, NativeAudioModelInfo> = {
   'gpt-4o-realtime-preview': { provider: 'openai-realtime', label: 'GPT-4o Realtime', implemented: true },
   'gpt-4o-mini-realtime-preview': { provider: 'openai-realtime', label: 'GPT-4o mini Realtime', implemented: true },
-  'gemini-2.0-flash-live': { provider: 'gemini-live', label: 'Gemini Live', implemented: false }
+  'gemini-2.0-flash-live-001': { provider: 'gemini-live', label: 'Gemini Live', implemented: true }
 }
 
 export function isNativeAudioModel(model: string): boolean {

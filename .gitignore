@@ -17,6 +17,9 @@ release
 # Local secrets (bot tokens, API keys, GitHub PAT)
 .env
 
+# Backups written by the agent's delete_file tool before removing a file
+.code-ide-backups/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

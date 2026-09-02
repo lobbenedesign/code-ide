@@ -21,7 +21,10 @@ import { executeGetRepoMap, RepoMapToolDefinition } from './agent/tools/RepoMapP
 import { executeReadFile, ReadFileToolDefinition } from './agent/tools/ReadFilePlugin'
 import { executeSearch, SearchToolDefinition } from './agent/tools/SearchPlugin'
 import { executeGetDiagnostics, DiagnosticsToolDefinition } from './agent/tools/DiagnosticsPlugin'
+import { executeOcrImage, OcrToolDefinition } from './agent/tools/OcrPlugin'
+import { BrowserToolDefinitions, executeBrowserTool } from './agent/tools/BrowserAgentPlugin'
 import { stopInvokeAI } from './services/invokeAIService'
+import { extractDocumentText } from './services/documentExtract'
 
 dotenv.config()
 
@@ -431,18 +434,33 @@ ipcMain.handle('agents.list', (_event, projectRoot: string) => {
 // Terminal integration
 let ptyProcess: any = null
 
-ipcMain.handle('terminal.spawn', (event) => {
+ipcMain.handle('terminal.spawn', (event, cwd?: string) => {
   if (ptyProcess) {
     ptyProcess.kill()
   }
 
-  const shell = os.platform() === 'win32' ? 'cmd.exe' : '/bin/bash'
-  
+  // Prima usava sempre '/bin/bash' — su macOS (Catalina+) quello è il vecchio
+  // bash 3.2 di sistema tenuto solo per compatibilità, non la shell di login
+  // reale dell'utente (zsh di default dal 2019): ogni apertura del terminale
+  // stampava l'avviso "The default interactive shell is now zsh..." e non
+  // caricava affatto .zshrc (alias, PATH di nvm/pyenv, ecc. configurati lì).
+  // os.userInfo().shell legge la shell di login vera dal database utenti di
+  // sistema (dscl su macOS) — affidabile anche quando l'app è lanciata dal
+  // Dock/Finder, a differenza di process.env.SHELL che un processo GUI non
+  // sempre eredita.
+  const shell = os.platform() === 'win32' ? 'cmd.exe' : (os.userInfo().shell || process.env.SHELL || '/bin/zsh')
+
+  // Prima era sempre process.cwd() (la cartella da cui è partito il processo
+  // Electron), non la cartella progetto realmente aperta in ESPLORA RISORSE —
+  // coincidevano per puro caso nello sviluppo (npm run dev parte dalla root
+  // del repo, che è anche il primo progetto mostrato), ma aprendone un altro
+  // il terminale restava nella cartella sbagliata, a differenza di VS Code/
+  // Claude Code dove il terminale integrato segue sempre la root del progetto.
   ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-color',
     cols: 80,
     rows: 30,
-    cwd: process.cwd(),
+    cwd: cwd || process.cwd(),
     env: process.env as any
   })
 
@@ -558,7 +576,16 @@ ipcMain.handle('omniroute-chat-completion', async (_event, params: { model: stri
 // Compiler API, non disponibile nel renderer. Stessa whitelist di sola
 // lettura già usata dai sub-agenti (SubagentPlugin.ts) meno i tool browser,
 // non rilevanti per la chat testuale.
-const READONLY_CHAT_TOOLS = [ReadFileToolDefinition, SearchToolDefinition, RepoMapToolDefinition, DiagnosticsToolDefinition]
+// Tool del Browser Agent inclusi qui SOLO nelle varianti di sola lettura
+// (navigate/screenshot/eval/smart_locate — guardare, non agire): browser_click
+// e browser_solve_cloudflare restano esclusivi di Agent Mode, come nell'harness.
+const READONLY_CHAT_TOOLS = [
+  ReadFileToolDefinition, SearchToolDefinition, RepoMapToolDefinition, DiagnosticsToolDefinition, OcrToolDefinition,
+  BrowserToolDefinitions[0], // browser_navigate
+  BrowserToolDefinitions[1], // browser_screenshot
+  BrowserToolDefinitions[2], // browser_eval
+  BrowserToolDefinitions[4]  // browser_smart_locate
+]
 
 ipcMain.handle('get-readonly-chat-tools', () => READONLY_CHAT_TOOLS)
 
@@ -568,7 +595,22 @@ ipcMain.handle('run-readonly-tool', async (_event, params: { functionName: strin
   if (functionName === 'search_codebase') return executeSearch(args, cwd)
   if (functionName === 'get_repo_map') return executeGetRepoMap(args, cwd)
   if (functionName === 'get_diagnostics') return executeGetDiagnostics(args, cwd)
+  if (functionName === 'ocr_image') return executeOcrImage(args, cwd)
+  if (functionName.startsWith('browser_')) return executeBrowserTool(functionName, args, cwd)
   return `Strumento non disponibile per la chat (sola lettura): ${functionName}`
+})
+
+// Estrazione testo da PDF/DOCX allegati in chat: pdf-parse/mammoth sono
+// librerie Node (Buffer, fs) irraggiungibili dal renderer in modo affidabile,
+// quindi il file grezzo arriva qui via IPC (ArrayBuffer) e il testo estratto
+// torna indietro come stringa semplice, stesso trattamento di un file .txt.
+ipcMain.handle('extract-document-text', async (_event, params: { fileName: string, buffer: ArrayBuffer }) => {
+  try {
+    const { text, warning } = await extractDocumentText(Buffer.from(params.buffer), params.fileName)
+    return { ok: true, text, warning }
+  } catch (error: any) {
+    return { ok: false, error: error.message }
+  }
 })
 
 // Bot Reply Handler

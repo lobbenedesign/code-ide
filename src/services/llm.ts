@@ -271,7 +271,7 @@ export function getOpenRouterApiKey(): string | null {
 // non hanno mai questo formato: il vecchio controllo per parole chiave ('llama3',
 // 'latest', ecc.) falliva su tag reali come 'qwen2.5:7b' che non le contengono,
 // facendoli finire per errore nel branch OpenAI (che poi chiede una API key inutile).
-function looksLikeOllamaTag(model: string): boolean {
+export function looksLikeOllamaTag(model: string): boolean {
   return /^[\w.-]+:[\w.-]+$/.test(model)
 }
 

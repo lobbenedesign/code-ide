@@ -4,6 +4,7 @@ import { SearchToolDefinition, executeSearch } from './SearchPlugin'
 import { RepoMapToolDefinition, executeGetRepoMap } from './RepoMapPlugin'
 import { DiagnosticsToolDefinition, executeGetDiagnostics } from './DiagnosticsPlugin'
 import { BrowserToolDefinitions, executeBrowserTool } from './BrowserAgentPlugin'
+import { OcrToolDefinition, executeOcrImage } from './OcrPlugin'
 import { findAgentDefinition } from '../../services/definitionLoader'
 
 export const SubagentToolDefinition = {
@@ -43,10 +44,11 @@ export const SubagentToolDefinition = {
 // ruoli come "QA Tester" (browser_navigate/screenshot/eval) o "Type Checker"
 // (get_diagnostics).
 const SUBAGENT_TOOLS = [
-  ReadFileToolDefinition, SearchToolDefinition, RepoMapToolDefinition, DiagnosticsToolDefinition,
+  ReadFileToolDefinition, SearchToolDefinition, RepoMapToolDefinition, DiagnosticsToolDefinition, OcrToolDefinition,
   BrowserToolDefinitions[0], // browser_navigate
   BrowserToolDefinitions[1], // browser_screenshot
-  BrowserToolDefinitions[2]  // browser_eval
+  BrowserToolDefinitions[2], // browser_eval
+  BrowserToolDefinitions[4]  // browser_smart_locate
 ]
 const SUBAGENT_MAX_ITERATIONS = 5
 
@@ -74,9 +76,9 @@ export async function executeSubagent(
   if (!agentRole) agentRole = 'Assistente generico'
 
   const systemPrompt = personaPrompt
-    ? `${personaPrompt}\n\nConcentrati SOLO sul task assegnato. Hai a disposizione tool di sola lettura (read_file, search_codebase, get_repo_map, get_diagnostics, browser_navigate, browser_screenshot, browser_eval) per investigare il codice reale invece di indovinare. Non puoi scrivere né eseguire nulla: quando hai finito di investigare, fornisci la tua analisi/soluzione finale a testo.`
+    ? `${personaPrompt}\n\nConcentrati SOLO sul task assegnato. Hai a disposizione tool di sola lettura (read_file, search_codebase, get_repo_map, get_diagnostics, ocr_image, browser_navigate, browser_screenshot, browser_eval) per investigare il codice reale invece di indovinare. Non puoi scrivere né eseguire nulla: quando hai finito di investigare, fornisci la tua analisi/soluzione finale a testo.`
     : `Sei un sub-agente specializzato. Il tuo ruolo è: ${agentRole}.
-Concentrati SOLO sul task assegnato. Hai a disposizione tool di sola lettura (read_file, search_codebase, get_repo_map, get_diagnostics, browser_navigate, browser_screenshot, browser_eval) per investigare il codice reale e ispezionare visivamente un'app in esecuzione invece di indovinare — usali quando ti serve vedere qualcosa che non ti è stato passato nel prompt. Non puoi scrivere né eseguire nulla: quando hai finito di investigare, fornisci la tua analisi/soluzione finale a testo.`
+Concentrati SOLO sul task assegnato. Hai a disposizione tool di sola lettura (read_file, search_codebase, get_repo_map, get_diagnostics, ocr_image, browser_navigate, browser_screenshot, browser_eval) per investigare il codice reale e ispezionare visivamente un'app in esecuzione invece di indovinare — usali quando ti serve vedere qualcosa che non ti è stato passato nel prompt. Non puoi scrivere né eseguire nulla: quando hai finito di investigare, fornisci la tua analisi/soluzione finale a testo.`
 
   const messages: any[] = [
     { role: 'system', content: systemPrompt },
@@ -108,6 +110,8 @@ Concentrati SOLO sul task assegnato. Hai a disposizione tool di sola lettura (re
           toolResult = await executeGetRepoMap(parsedArgs, cwd)
         } else if (functionName === 'get_diagnostics') {
           toolResult = await executeGetDiagnostics(parsedArgs, cwd)
+        } else if (functionName === 'ocr_image') {
+          toolResult = await executeOcrImage(parsedArgs, cwd)
         } else if (functionName.startsWith('browser_')) {
           toolResult = await executeBrowserTool(functionName, parsedArgs, cwd)
         } else {

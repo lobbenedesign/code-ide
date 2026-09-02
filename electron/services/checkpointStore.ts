@@ -69,6 +69,53 @@ export function snapshotFileIfNeeded(cwd: string, runId: string, filePath: strin
   pending.files.set(filePath, { filePath, existedBefore, originalContent })
 }
 
+// delete_folder è irreversibile su disco quanto delete_file, ma tocca N file
+// invece di uno: prima di eliminare la cartella camminiamo l'intero albero e
+// catturiamo OGNI file al suo path relativo, riusando esattamente lo stesso
+// meccanismo di snapshot/revert di edit_file — nessuna nuova infrastruttura,
+// solo N chiamate a snapshotFileIfNeeded invece di una.
+export function snapshotFolderIfNeeded(cwd: string, runId: string, folderPath: string): void {
+  const pending = pendingByRunId.get(runId)
+  if (!pending) return
+
+  const absFolder = resolvePath(cwd, folderPath)
+  if (!fs.existsSync(absFolder) || !fs.statSync(absFolder).isDirectory()) return
+
+  const walk = (absDir: string) => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      const absEntryPath = path.join(absDir, entry.name)
+      if (entry.isDirectory()) {
+        walk(absEntryPath)
+      } else if (entry.isFile()) {
+        // Lo store salva solo testo UTF-8: un binario (immagine, font, ...)
+        // "ripristinato" da bytes letti come UTF-8 sarebbe corrotto, il che è
+        // peggio che non coprirlo affatto. Rileviamo un binario con
+        // l'euristica standard (byte nullo nei primi 8KB) e lo saltiamo: verrà
+        // comunque eliminato, solo non sarà ricostruibile con "Annulla task".
+        try {
+          const fd = fs.openSync(absEntryPath, 'r')
+          const buf = Buffer.alloc(8192)
+          const bytesRead = fs.readSync(fd, buf, 0, 8192, 0)
+          fs.closeSync(fd)
+          if (buf.subarray(0, bytesRead).includes(0)) continue
+        } catch {
+          continue
+        }
+        const relPath = path.relative(cwd, absEntryPath)
+        snapshotFileIfNeeded(cwd, runId, relPath)
+      }
+    }
+  }
+  walk(absFolder)
+}
+
 function pruneOldCheckpoints(projectRoot: string): void {
   const dir = getCheckpointsDir(projectRoot)
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'))
