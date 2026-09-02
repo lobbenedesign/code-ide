@@ -38,7 +38,7 @@ Desktop IDE (Electron + React + TypeScript) with an agentic AI assistant: multi-
 
 ![Model selection menu](.github/screenshots/02-model-dropdown.png)
 
-![Real file reading from normal chat](.github/screenshots/03-file-reading.png)
+![Step confirmation modal for multi-file review](.github/screenshots/04-step-modal.png)
 
 ## Development
 
