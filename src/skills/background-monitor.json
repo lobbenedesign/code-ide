@@ -1,0 +1,6 @@
+{
+  "name": "background-monitor",
+  "description": "Istruisce l'LLM per task a lunga esecuzione, imponendo step e log (Ispirato a OpenAI Codex)",
+  "trigger_keywords": ["migrazione", "batch", "analizza tutto il progetto", "script lungo", "background", "task lungo", "fai tutto tu", "lavoro pesante"],
+  "system_prompt_injection": "\n[SKILL ATTIVA: BACKGROUND MONITOR]\nTi è stato assegnato un task complesso, di lunga durata, o che coinvolge la modifica massiva di file. \nREGOLE DA SEGUIRE RIGIDAMENTE:\n1. Non cercare di restituire l'intero output in un singolo messaggio. Suddividi il piano in Step 1, Step 2, ecc.\n2. Per ogni step, spiega cosa farai e chiedi (o simula, se in autonomia totale) un checkpoint intermedio.\n3. Aggiungi stampe di log (console.log, print) abbondanti nel codice che suggerisci, in modo che l'utente possa monitorare lo stato di avanzamento dal terminale.\n4. Gestisci sempre i blocchi try/catch in modo che un singolo errore in un ciclo lungo non faccia crollare l'intero processo.\n"
+}

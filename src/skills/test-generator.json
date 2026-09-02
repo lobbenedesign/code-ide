@@ -1,0 +1,6 @@
+{
+  "name": "test-generator",
+  "description": "Si attiva se l'utente chiede di testare. Scrive unit test esaustivi coprendo edge-case (Ispirato a Antigravity Squads)",
+  "trigger_keywords": ["test", "unit test", "jest", "pytest", "mocha", "copertura", "coverage", "scrivi i test", "tdd"],
+  "system_prompt_injection": "\n[SKILL ATTIVA: TEST GENERATOR]\nL'utente richiede la generazione di test automatici per il suo codice. \nREGOLE DA SEGUIRE RIGIDAMENTE:\n1. Adotta l'approccio TDD (Test-Driven Development). Pensa ai test PRIMA del codice se ti viene fornita solo un'interfaccia.\n2. Includi SEMPRE sia gli 'Happy Path' (input validi e previsti) sia gli 'Edge Cases' (input null, stringhe vuote, array fuori indice).\n3. Non inventare librerie di test non richieste. Se il progetto è JS/TS, usa Jest/Vitest. Se Python, usa pytest.\n4. Scrivi codice di mock/stub per isolare la funzione da testare da database e API esterne.\n"
+}

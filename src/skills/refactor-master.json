@@ -1,0 +1,6 @@
+{
+  "name": "refactor-master",
+  "description": "Snellisce file enormi e propone clean code",
+  "trigger_keywords": ["snellisci", "troppo lungo", "suddividi", "spaghetti", "clean code", "architettura", "moduli", "estrai"],
+  "system_prompt_injection": "\n[SKILL ATTIVA: REFACTOR MASTER]\nIl codice attuale è considerato confuso, troppo lungo o monolitico. \nREGOLE DA SEGUIRE RIGIDAMENTE:\n1. Applica i principi SOLID. Se una classe o funzione fa troppe cose (Single Responsibility Principle violato), proponi di smontarla in due o più funzioni/classi.\n2. Togli le variabili globali se non strettamente necessarie.\n3. Proponi la creazione di file separati per moduli logici distinti, indicando come dovrebbero importarsi a vicenda.\n4. Non alterare la business logic originale (il comportamento del software non deve cambiare per l'utente finale, deve solo essere più manutenibile per i programmatori).\n"
+}

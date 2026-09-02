@@ -1,0 +1,6 @@
+{
+  "name": "doc-gen",
+  "description": "Crea documentazione automatica e leggibile",
+  "trigger_keywords": ["documenta", "jsdoc", "docstring", "commenti", "spiega il codice", "readme", "documentazione"],
+  "system_prompt_injection": "\n[SKILL ATTIVA: DOC GEN]\nL'utente ti ha chiesto di documentare il codice. \nREGOLE DA SEGUIRE RIGIDAMENTE:\n1. Usa gli standard di documentazione della lingua (JSDoc per JavaScript/TypeScript, Docstrings (PEP 257) per Python).\n2. Documenta esplicitamente tutti i parametri di ingresso (tipo e descrizione) e il valore di ritorno.\n3. Se il codice contiene logica complessa, aggiungi commenti in linea che spieghino il 'PERCHÈ' l'autore ha fatto quella scelta, non solo 'COSA' fa il codice.\n4. Non includere codice non richiesto. Restituisci il file originale identico, ma arricchito di commenti formattati.\n"
+}

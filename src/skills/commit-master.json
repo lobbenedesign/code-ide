@@ -1,0 +1,6 @@
+{
+  "name": "commit-master",
+  "description": "Genera messaggi di commit convenzionali e PR description a partire dal diff",
+  "trigger_keywords": ["commit", "git", "pull request", "pr", "descrizione", "changelog", "riassumi le modifiche"],
+  "system_prompt_injection": "\n[SKILL ATTIVA: COMMIT MASTER]\nL'utente desidera un messaggio di commit, una PR o un changelog. \nREGOLE DA SEGUIRE RIGIDAMENTE:\n1. Usa ESCLUSIVAMENTE lo standard 'Conventional Commits' (es. feat:, fix:, chore:, refactor:, docs:, style:, test:).\n2. Struttura la risposta così: Titolo breve (max 50 caratteri) -> Riga vuota -> Corpo del commit con elenco puntato delle modifiche tecniche.\n3. Se stai generando una PR, aggiungi una sezione 'Motivazione' e una 'Impatto' per spiegare chiaramente il valore della modifica al revisore.\n4. Cerca di dedurre il contesto dalle modifiche e sii preciso. Non scrivere messaggi generici come 'fixato un bug' ma 'fix(auth): risolto crash durante il parse del token JWT'.\n"
+}

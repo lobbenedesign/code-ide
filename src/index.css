@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Evidenziazione temporanea delle righe che l'agente ha appena scritto/modificato
+   nell'editor Monaco (vedi App.tsx: highlightChangedLines). Sfondo distinto che
+   svanisce dopo qualche secondo grazie alla transizione + rimozione della decorazione. */
+.agent-edited-line {
+  background-color: rgba(88, 166, 255, 0.18);
+  transition: background-color 3s ease-out;
+}
+
+.agent-edited-line-gutter {
+  background-color: rgba(88, 166, 255, 0.55);
+  width: 3px !important;
+  margin-left: 3px;
+}
