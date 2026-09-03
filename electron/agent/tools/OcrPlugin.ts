@@ -101,6 +101,44 @@ type OcrItem = { text: string, box: { x: number, y: number, width: number, heigh
 // disallineamento tipico dell'OCR), e ordiniamo ogni riga da sinistra a destra.
 // È un'euristica geometrica, non un vero riconoscimento di celle unite/divise,
 // ma preserva l'informazione che il solo testo concatenato perdeva del tutto.
+// Riconoscimento intestazione/riga totale via keyword matching (italiano +
+// inglese) — suggerito da una sessione parallela su GARE-OS dopo un
+// confronto diretto: quel progetto usa Docling/TableFormer per una vera
+// griglia di celle, non portabile qui senza uno stack Python pesante e fuori
+// scope. QUESTA parte però è pura logica di stringhe (alias di nomi colonna
+// + pattern "totale/sommano/riporto"), esattamente come in GARE-OS
+// (computo_comune.py::individua_intestazione/e_riga_di_totale) — nessun
+// modello ML coinvolto, quindi genuinamente portabile senza nuove dipendenze.
+const HEADER_COLUMN_ALIASES: RegExp[] = [
+  /\b(codice|cod\.?|art\.?|articolo)\b/i,
+  /\b(descrizione|descriz\.?|voce|oggetto)\b/i,
+  /\b(quantit[aà]|qt[aà]\.?|q\.\s?t[aà]\.?|qty)\b/i,
+  /\b(u\.?\s?m\.?|unit[aà] di misura|udm|unit)\b/i,
+  /\b(prezzo\s?unit\.?|p\.?\s?u\.?|price)\b/i,
+  /\b(importo|totale\s?riga|amount|total)\b/i,
+  /\b(name|nome|city|citt[aà]|age|et[aà])\b/i
+]
+const TOTAL_ROW_PATTERN = /\b(totale\s?generale|totale\s?complessivo|totale|sommano|riporto|somma|grand\s?total|subtotal)\b/i
+
+// Prime 3 righe soltanto: un'intestazione oltre quella profondità in una
+// tabella già piccola (il caso tipico qui, uno screenshot/foto) è più
+// probabile un falso positivo che una vera intestazione multi-riga.
+function detectHeaderRowIndex(grid: string[][]): number | null {
+  for (let i = 0; i < Math.min(grid.length, 3); i++) {
+    const matches = grid[i].filter(cell => HEADER_COLUMN_ALIASES.some(re => re.test(cell))).length
+    if (matches >= 2) return i
+  }
+  return null
+}
+
+function detectTotalRowIndices(grid: string[][]): number[] {
+  const indices: number[] = []
+  grid.forEach((row, i) => {
+    if (row.some(cell => TOTAL_ROW_PATTERN.test(cell))) indices.push(i)
+  })
+  return indices
+}
+
 function reconstructTableMarkdown(items: OcrItem[]): string {
   if (items.length === 0) return '(nessun testo riconosciuto dentro il riquadro tabella)'
 
@@ -125,13 +163,32 @@ function reconstructTableMarkdown(items: OcrItem[]): string {
 
   const grid = rows.map(row => row.sort((a, b) => a.box.x - b.box.x).map(cell => cell.text.replace(/\|/g, '\\|')))
   const colCount = Math.max(...grid.map(r => r.length))
+
+  const headerRowIndex = detectHeaderRowIndex(grid)
+  const totalRowIndices = new Set(detectTotalRowIndices(grid))
+  // Un separatore Markdown va comunque dopo la prima riga per sintassi
+  // valida, sia o meno una vera intestazione riconosciuta — dichiarato
+  // esplicitamente sotto quando non lo è, invece di far credere che lo sia.
+  const separatorRowIndex = headerRowIndex ?? 0
+
   const lines: string[] = []
   grid.forEach((row, i) => {
     const padded = [...row, ...Array(colCount - row.length).fill('')]
-    lines.push(`| ${padded.join(' | ')} |`)
-    if (i === 0) lines.push(`|${' --- |'.repeat(colCount)}`)
+    const isTotalRow = totalRowIndices.has(i)
+    const cells = isTotalRow ? padded.map(c => c ? `**${c}**` : c) : padded
+    lines.push(`| ${cells.join(' | ')} |`)
+    if (i === separatorRowIndex) lines.push(`|${' --- |'.repeat(colCount)}`)
   })
-  return lines.join('\n')
+
+  const notes: string[] = []
+  if (headerRowIndex === null) {
+    notes.push('_Nessuna intestazione riconosciuta con certezza (nessuna riga combacia con almeno 2 nomi di colonna noti) — la prima riga è trattata come intestazione solo per la sintassi della tabella, non è una rilevazione reale._')
+  }
+  if (totalRowIndices.size > 0) {
+    notes.push(`_Riga/e totale rilevata/e (in **grassetto** sopra): ${[...totalRowIndices].map(i => `riga ${i + 1}`).join(', ')}._`)
+  }
+
+  return notes.length > 0 ? `${lines.join('\n')}\n\n${notes.join('\n')}` : lines.join('\n')
 }
 
 export async function executeOcrImage(args: { imagePath: string }, cwd: string): Promise<string> {
