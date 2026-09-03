@@ -15,7 +15,17 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 // tRNS/bKGD (influenzano il rendering: colore, trasparenza, dimensioni fisiche).
 const PNG_METADATA_CHUNK_TYPES = new Set(['tEXt', 'zTXt', 'iTXt', 'eXIf', 'tIME'])
 
-function stripPngMetadata(buffer: Buffer): { output: Buffer, removedChunks: string[] } {
+export type MetadataRemovalMode = 'all' | 'ai-only'
+
+// Firme tipiche dei generatori AI nei metadati
+const AI_METADATA_SIGNATURES = ['Midjourney', 'DALL-E', 'c2pa', 'Google', 'Stable Diffusion', 'xmp', 'http://ns.adobe.com/xap/1.0/']
+
+function isAiMetadata(chunkText: string): boolean {
+  const lower = chunkText.toLowerCase()
+  return AI_METADATA_SIGNATURES.some(sig => lower.includes(sig.toLowerCase()))
+}
+
+function stripPngMetadata(buffer: Buffer, mode: MetadataRemovalMode = 'all'): { output: Buffer, removedChunks: string[] } {
   if (!buffer.subarray(0, 8).equals(PNG_SIGNATURE)) {
     throw new Error('Non è un PNG valido (signature mancante).')
   }
@@ -32,7 +42,16 @@ function stripPngMetadata(buffer: Buffer): { output: Buffer, removedChunks: stri
     if (offset + chunkTotalLength > buffer.length) break // stesso caso: chunk dichiarato più lungo del file rimasto
 
     if (PNG_METADATA_CHUNK_TYPES.has(type)) {
-      removedChunks.push(type)
+      if (mode === 'all') {
+        removedChunks.push(type)
+      } else if (mode === 'ai-only') {
+        const chunkData = buffer.toString('latin1', offset + 8, offset + 8 + length)
+        if (isAiMetadata(chunkData)) {
+          removedChunks.push(type)
+        } else {
+          chunks.push(buffer.subarray(offset, offset + chunkTotalLength))
+        }
+      }
     } else {
       chunks.push(buffer.subarray(offset, offset + chunkTotalLength))
     }
@@ -53,7 +72,7 @@ function stripPngMetadata(buffer: Buffer): { output: Buffer, removedChunks: stri
 // va copiato tutto il resto così com'è.
 const JPEG_METADATA_MARKERS = new Set([0xe1, 0xed, 0xfe]) // APP1, APP13, COM
 
-function stripJpegMetadata(buffer: Buffer): { output: Buffer, removedChunks: string[] } {
+function stripJpegMetadata(buffer: Buffer, mode: MetadataRemovalMode = 'all'): { output: Buffer, removedChunks: string[] } {
   if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) {
     throw new Error('Non è un JPEG valido (marker SOI mancante).')
   }
@@ -78,7 +97,16 @@ function stripJpegMetadata(buffer: Buffer): { output: Buffer, removedChunks: str
     const totalLength = 2 + segmentLength // marker (2 byte) + segmentLength
 
     if (JPEG_METADATA_MARKERS.has(marker)) {
-      removedChunks.push(`APP/COM 0xFF${marker.toString(16).toUpperCase()}`)
+      if (mode === 'all') {
+        removedChunks.push(`APP/COM 0xFF${marker.toString(16).toUpperCase()}`)
+      } else if (mode === 'ai-only') {
+        const chunkData = buffer.toString('latin1', offset + 4, offset + totalLength)
+        if (isAiMetadata(chunkData)) {
+          removedChunks.push(`APP/COM 0xFF${marker.toString(16).toUpperCase()}`)
+        } else {
+          chunks.push(buffer.subarray(offset, offset + totalLength))
+        }
+      }
     } else {
       chunks.push(buffer.subarray(offset, offset + totalLength))
     }
@@ -96,9 +124,9 @@ export function detectImageFormat(buffer: Buffer): 'png' | 'jpeg' | null {
 }
 
 /** Ritorna il file SENZA i chunk/marker di metadati testuali (firma AI/provenienza inclusa), pronto per essere riscritto su disco. Non tocca un byte dei pixel. */
-export function stripImageMetadata(buffer: Buffer): { output: Buffer, removedChunks: string[], format: 'png' | 'jpeg' } {
+export function stripImageMetadata(buffer: Buffer, mode: MetadataRemovalMode = 'all'): { output: Buffer, removedChunks: string[], format: 'png' | 'jpeg' } {
   const format = detectImageFormat(buffer)
-  if (format === 'png') return { ...stripPngMetadata(buffer), format }
-  if (format === 'jpeg') return { ...stripJpegMetadata(buffer), format }
+  if (format === 'png') return { ...stripPngMetadata(buffer, mode), format }
+  if (format === 'jpeg') return { ...stripJpegMetadata(buffer, mode), format }
   throw new Error('Formato immagine non riconosciuto (supportati: PNG, JPEG).')
 }

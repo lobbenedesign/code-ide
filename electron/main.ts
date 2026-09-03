@@ -312,9 +312,11 @@ ipcMain.handle('read-file', async (_event, filePath: string) => {
   }
 })
 
-ipcMain.handle('save-file', async (_event, filePath: string, content: string) => {
+ipcMain.handle('save-file', async (_event, filePath: string, content: string, options?: { metadataRemoval?: 'all' | 'ai-only' | 'none' }) => {
   try {
-    await fs.writeFile(filePath, content, 'utf-8')
+    const { sanitizeAndFormatCode } = await import('./services/codeSanitizer')
+    const finalContent = await sanitizeAndFormatCode(content, filePath, options?.metadataRemoval || 'none')
+    await fs.writeFile(filePath, finalContent, 'utf-8')
     return { success: true }
   } catch (error: any) {
     return { success: false, error: error.message }
@@ -357,11 +359,11 @@ ipcMain.handle('reveal-in-folder', (_event, filePath: string) => {
 // JPEG APP1/APP13/COM) da un'immagine — dove i generatori AI incorporano la
 // loro firma/provenienza — sovrascrivendo il file. Pura manipolazione dei
 // byte del contenitore, i pixel non vengono toccati/ricompressi.
-ipcMain.handle('strip-image-metadata', async (_event, filePath: string) => {
+ipcMain.handle('strip-image-metadata', async (_event, filePath: string, options?: { metadataRemoval?: 'all' | 'ai-only' }) => {
   try {
     const buffer = await fs.readFile(filePath)
     const { stripImageMetadata } = await import('./services/imageMetadata')
-    const { output, removedChunks, format } = stripImageMetadata(buffer)
+    const { output, removedChunks, format } = stripImageMetadata(buffer, options?.metadataRemoval || 'all')
     if (removedChunks.length === 0) {
       return { success: true, removedChunks: [], format, bytesRemoved: 0 }
     }

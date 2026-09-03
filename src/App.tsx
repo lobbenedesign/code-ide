@@ -70,6 +70,7 @@ function App() {
   const [currentDir, setCurrentDir] = useState<string>('')
   const [isSaving, setIsSaving] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [metadataRemovalMode, setMetadataRemovalMode] = useState<'all' | 'ai-only' | 'none'>('ai-only')
   const editorRef = useRef<any>(null)
   const decorationsRef = useRef<string[]>([])
   const openTabsRef = useRef<OpenTab[]>([])
@@ -377,7 +378,7 @@ function App() {
     setIsStrippingMetadata(true)
     try {
       // @ts-ignore
-      const result = await window.ipcRenderer.invoke('strip-image-metadata', activeTabPath)
+      const result = await window.ipcRenderer.invoke('strip-image-metadata', activeTabPath, { metadataRemoval: metadataRemovalMode === 'none' ? 'ai-only' : metadataRemovalMode })
       if (!result.success) {
         setMetadataModalIsError(true)
         setMetadataModalMessage(result.error)
@@ -455,7 +456,7 @@ function App() {
     try {
       const activeTab = openTabsRef.current.find(t => t.path === activeTabPath)
       // @ts-ignore
-      const result = await window.ipcRenderer.invoke('save-file', activeTabPath, activeTab?.content ?? '')
+      const result = await window.ipcRenderer.invoke('save-file', activeTabPath, activeTab?.content ?? '', { metadataRemoval: metadataRemovalMode })
       if (result.success) {
         setOpenTabs(prev => prev.map(t => t.path === activeTabPath ? { ...t, isDirty: false } : t))
       } else {
@@ -679,6 +680,22 @@ function App() {
               </div>
             )}
           </div>
+
+          {/* Opzioni globali di pulizia (visibili se c'è un tab aperto) */}
+          {activeTabPath && (
+            <div className="flex items-center gap-2 shrink-0 mr-2 border-r border-[#444] pr-2">
+              <select
+                value={metadataRemovalMode}
+                onChange={e => setMetadataRemovalMode(e.target.value as any)}
+                className="bg-[#37373d] text-gray-300 text-xs rounded px-2 py-1 outline-none border border-[#444]"
+                title="Livello di pulizia metadati al salvataggio (Codice e Immagini)"
+              >
+                <option value="none">Pulizia: Disabilitata</option>
+                <option value="ai-only">Pulizia: Solo Firme/Commenti AI</option>
+                <option value="all">Pulizia: Tutto (AI + Standard)</option>
+              </select>
+            </div>
+          )}
 
           {/* Actions */}
           {activeTabPath && activeTab?.isImage && (
