@@ -22,10 +22,9 @@ const DOCLAYOUT_PACKAGE_NAME = 'ppu-doclayout'
 // direttamente via ONNX Runtime dentro Node/Electron, senza Python né un
 // runtime GPU pesante, con un'accuratezza misurata nettamente superiore a
 // Tesseract (che quindi non viene affiancato come "livello leggero": qui
-// l'opzione più leggera è già la più accurata). Limite dichiarato: preserva
-// il TESTO delle celle di una tabella ma non la struttura righe/colonne —
-// per quello servirebbe il pacchetto complementare 'ppu-doclayout' (stesso
-// autore, stessa famiglia di dipendenze), non incluso in questa prima versione.
+// l'opzione più leggera è già la più accurata). La struttura righe/colonne
+// delle tabelle viene ricostruita col pacchetto complementare 'ppu-doclayout'
+// (stesso autore, stessa famiglia di dipendenze) — vedi reconstructTableMarkdown più sotto.
 export const OcrToolDefinition = {
   type: 'function' as const,
   function: {
