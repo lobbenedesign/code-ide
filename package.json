@@ -54,6 +54,7 @@
     "node-pty": "^1.1.0",
     "node-telegram-bot-api": "^2.1.0",
     "onnxruntime-node": "^1.29.0",
+    "patchright": "^1.62.3",
     "pdf-parse": "^2.4.5",
     "ppu-doclayout": "^1.0.0",
     "ppu-paddle-ocr": "^6.4.3",

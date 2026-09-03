@@ -23,6 +23,8 @@ import { executeSearch, SearchToolDefinition } from './agent/tools/SearchPlugin'
 import { executeGetDiagnostics, DiagnosticsToolDefinition } from './agent/tools/DiagnosticsPlugin'
 import { executeOcrImage, OcrToolDefinition } from './agent/tools/OcrPlugin'
 import { BrowserToolDefinitions, executeBrowserTool } from './agent/tools/BrowserAgentPlugin'
+import { closeBrowserAgent } from './services/browserAgent'
+import { closeStealthBrowserAgent } from './services/stealthBrowserAgent'
 import { stopInvokeAI } from './services/invokeAIService'
 import { extractDocumentText } from './services/documentExtract'
 
@@ -493,6 +495,8 @@ ipcMain.on('terminal.resize', (_event, cols: number, rows: number) => {
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
   stopInvokeAI()
+  closeBrowserAgent()
+  closeStealthBrowserAgent()
   if (process.platform !== 'darwin') {
     app.quit()
     win = null
@@ -502,12 +506,15 @@ app.on('window-all-closed', () => {
 // 'window-all-closed' da solo non basta: in modalità sviluppo vite-plugin-electron
 // termina il vecchio processo Electron direttamente a ogni modifica ai file del
 // main process, SENZA passare da quell'evento — questi handler garantiscono il
-// cleanup di InvokeAI qualunque sia il percorso di uscita del processo (lo stesso
-// schema di rischio che, con il Voice Agent rimosso, aveva già causato un
-// accumulo di processi orfani e un vero kernel panic verificato nei log di sistema).
-app.on('before-quit', () => { stopInvokeAI() })
-process.on('SIGINT', () => { stopInvokeAI(); process.exit(0) })
-process.on('SIGTERM', () => { stopInvokeAI(); process.exit(0) })
+// cleanup di InvokeAI (e ora anche della BrowserWindow nascosta del Browser
+// Agent e del Chromium/Chrome separato lanciato da patchright per il backend
+// stealth: entrambi processi/finestre che altrimenti resterebbero orfani)
+// qualunque sia il percorso di uscita del processo — lo stesso schema di
+// rischio che, con il Voice Agent rimosso, aveva già causato un accumulo di
+// processi orfani e un vero kernel panic verificato nei log di sistema.
+app.on('before-quit', () => { stopInvokeAI(); closeBrowserAgent(); closeStealthBrowserAgent() })
+process.on('SIGINT', () => { stopInvokeAI(); closeBrowserAgent(); closeStealthBrowserAgent(); process.exit(0) })
+process.on('SIGTERM', () => { stopInvokeAI(); closeBrowserAgent(); closeStealthBrowserAgent(); process.exit(0) })
 
 app.on('activate', () => {
   // On OS X it's common to re-create a window in the app when the

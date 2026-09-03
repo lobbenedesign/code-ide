@@ -15,17 +15,17 @@ import { smartLocateInBrowser, type ElementDescriptor } from './adaptiveSelector
 
 let agentWindow: BrowserWindow | null = null
 
-// Studiato leggendo il codice reale di D4Vinci/Scrapling (non il README): la
-// sua evasione anti-bot vera arriva da patchright (patch al protocollo CDP di
-// Chromium) e curl_cffi (impersonazione TLS/JA3) — entrambe dipendenze
-// esterne che Scrapling stesso non ha scritto, non portabili in una
-// BrowserWindow di Electron (stesso motore Chromium dell'app host, non un
-// processo Chromium separato lanciabile con flag arbitrari). Onestamente
-// dichiarato: questa finestra NON diventa "invisibile" a un sistema anti-bot
-// sofisticato (Cloudflare/DataDome a livello enterprise). Quello che SI PUÒ
-// fare, a costo quasi zero, è togliere il segnale più ovvio e gratuito che
-// Electron regala di default: lo User-Agent include letteralmente il token
-// "Electron/x.y.z", un'auto-denuncia che nessun vero browser manda mai.
+// Questa BrowserWindow (stesso motore Chromium dell'app host, non un processo
+// Chromium separato lanciabile con flag arbitrari) NON può ricevere le patch
+// CDP reali di patchright — per quello serve un browser DAVVERO separato, che
+// è esattamente cosa fa 'stealthBrowserAgent.ts' (browser_navigate con
+// stealthy:true). Questa finestra resta il backend di default, più leggero e
+// più rapido da avviare, per il caso comune: testare visivamente l'app che
+// l'agente sta sviluppando in locale, dove l'anti-bot non è un problema.
+// Quello che SI PUÒ fare qui a costo quasi zero è togliere il segnale più
+// ovvio e gratuito che Electron regala di default: lo User-Agent include
+// letteralmente il token "Electron/x.y.z", un'auto-denuncia che nessun vero
+// browser manda mai.
 const REALISTIC_CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 function getAgentWindow(): BrowserWindow {
@@ -95,7 +95,7 @@ export async function clickInBrowser(x: number, y: number): Promise<string> {
 
 export async function smartLocateBrowser(descriptor: ElementDescriptor): Promise<string> {
   const win = getAgentWindow()
-  const result = await smartLocateInBrowser(win, descriptor)
+  const result = await smartLocateInBrowser((script) => win.webContents.executeJavaScript(script), descriptor)
   if (!result.found) return `❌ ${result.message}`
   return `✅ ${result.message}\nSelettore: ${result.selector}\nBounding box: x=${Math.round(result.boundingBox!.x)}, y=${Math.round(result.boundingBox!.y)}, w=${Math.round(result.boundingBox!.width)}, h=${Math.round(result.boundingBox!.height)}\nHTML: ${result.outerHTMLSnippet}`
 }

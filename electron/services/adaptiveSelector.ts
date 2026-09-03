@@ -1,5 +1,3 @@
-import { BrowserWindow } from 'electron'
-
 // Selettori "adattivi": tecnica studiata dal codice REALE di D4Vinci/Scrapling
 // (scrapling/parser.py, relocate()/__calculate_similarity_score()) — non dal
 // solo README. È l'unica parte di quel progetto genuinamente portabile: un
@@ -35,9 +33,10 @@ export interface SmartLocateResult {
 }
 
 // Iniettata come stringa e valutata dentro alla pagina: deve essere
-// autosufficiente (nessuna closure esterna), perché executeJavaScript la
-// esegue in un contesto V8 separato dal processo main.
-function buildInjectedScript(descriptor: ElementDescriptor): string {
+// autosufficiente (nessuna closure esterna), perché sia executeJavaScript di
+// Electron sia page.evaluate() di Playwright/patchright la eseguono in un
+// contesto V8 separato dal processo che li chiama.
+export function buildInjectedScript(descriptor: ElementDescriptor): string {
   const descriptorJson = JSON.stringify(descriptor)
   return `
 (function () {
@@ -187,12 +186,16 @@ function buildInjectedScript(descriptor: ElementDescriptor): string {
 `
 }
 
-export async function smartLocateInBrowser(win: BrowserWindow, descriptor: ElementDescriptor): Promise<SmartLocateResult> {
+// 'evaluate' astrae la differenza tra webContents.executeJavaScript
+// (Electron) e page.evaluate (Playwright/patchright) — l'algoritmo sopra
+// resta identico per entrambi i backend del Browser Agent, solo il modo di
+// eseguirlo nella pagina cambia.
+export async function smartLocateInBrowser(evaluate: (script: string) => Promise<any>, descriptor: ElementDescriptor): Promise<SmartLocateResult> {
   if (!descriptor.tagName && !descriptor.text && !descriptor.attributes && !descriptor.previousSelector) {
     return { found: false, message: "Serve almeno uno tra tagName, text, attributes o previousSelector per cercare un elemento." }
   }
   try {
-    const result = await win.webContents.executeJavaScript(buildInjectedScript(descriptor))
+    const result = await evaluate(buildInjectedScript(descriptor))
     return result as SmartLocateResult
   } catch (error: any) {
     return { found: false, message: `Errore durante la ricerca adattiva: ${error.message}` }

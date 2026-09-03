@@ -28,7 +28,7 @@ export default defineConfig({
               // 'startsWith' sullo specifier nudo non lo intercetta, serve un
               // controllo su 'includes' che funzioni anche su un path assoluto.
               external: (id) =>
-                ['node-pty', 'better-sqlite3', 'qrcode-terminal', 'node-telegram-bot-api', 'whatsapp-web.js', 'typescript', 'ppu-paddle-ocr', 'ppu-doclayout', 'onnxruntime-node'].includes(id)
+                ['node-pty', 'better-sqlite3', 'qrcode-terminal', 'node-telegram-bot-api', 'whatsapp-web.js', 'typescript', 'ppu-paddle-ocr', 'ppu-doclayout', 'onnxruntime-node', 'patchright', 'patchright-core'].includes(id)
                 || id.includes('@napi-rs/canvas')
             }
           }
