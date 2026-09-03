@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -316,6 +316,57 @@ ipcMain.handle('save-file', async (_event, filePath: string, content: string) =>
   try {
     await fs.writeFile(filePath, content, 'utf-8')
     return { success: true }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon'
+}
+
+// 'read-file' legge sempre come UTF-8: per un binario come un PNG/JPEG questo
+// mangia i byte non validi in U+FFFD, rendendo il file un muro di "�" invece
+// di mostrare né l'immagine né i metadati testuali reali che contiene. Questo
+// handler dedicato restituisce ENTRAMBE le viste: 'dataUrl' per il rendering
+// vero e proprio, e 'rawText' (decodificato latin1 — 1 byte = 1 carattere,
+// nessuna perdita) per la vista "codice" dove restano leggibili le stringhe
+// di metadati incorporate (es. firme/provenienza degli strumenti di
+// generazione AI: "http", "google", "gemini", ecc. viste dall'utente).
+ipcMain.handle('read-image-file', async (_event, filePath: string) => {
+  try {
+    const buffer = await fs.readFile(filePath)
+    const ext = filePath.split('.').pop()?.toLowerCase() || ''
+    const mimeType = IMAGE_MIME_BY_EXT[ext] || 'application/octet-stream'
+    return {
+      success: true,
+      dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`,
+      rawText: buffer.toString('latin1')
+    }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('reveal-in-folder', (_event, filePath: string) => {
+  shell.showItemInFolder(filePath)
+})
+
+// Rimuove i chunk/marker di metadati testuali (PNG tEXt/zTXt/iTXt/eXIf/tIME,
+// JPEG APP1/APP13/COM) da un'immagine — dove i generatori AI incorporano la
+// loro firma/provenienza — sovrascrivendo il file. Pura manipolazione dei
+// byte del contenitore, i pixel non vengono toccati/ricompressi.
+ipcMain.handle('strip-image-metadata', async (_event, filePath: string) => {
+  try {
+    const buffer = await fs.readFile(filePath)
+    const { stripImageMetadata } = await import('./services/imageMetadata')
+    const { output, removedChunks, format } = stripImageMetadata(buffer)
+    if (removedChunks.length === 0) {
+      return { success: true, removedChunks: [], format, bytesRemoved: 0 }
+    }
+    await fs.writeFile(filePath, output)
+    return { success: true, removedChunks, format, bytesRemoved: buffer.length - output.length }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

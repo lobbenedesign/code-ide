@@ -19,7 +19,13 @@ interface OpenTab {
   content: string
   isDirty: boolean
   isAgentWriting?: boolean
+  isImage?: boolean
+  imageDataUrl?: string
+  imageViewMode?: 'image' | 'code' // solo per tab immagine: mostra il rendering o i byte grezzi (dove restano leggibili eventuali metadati/firme AI)
+  metadataClean?: boolean // true dopo una pulizia riuscita (o se il file era già pulito): nasconde il pulsante, non ha più senso riproporlo
 }
+
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp|svg|ico)$/i
 
 // Calcola le righe (1-indicizzate, sul contenuto NUOVO) che differiscono da quelle
 // vecchie, via LCS — usato per evidenziare solo ciò che l'agente ha realmente
@@ -73,7 +79,8 @@ function App() {
   useEffect(() => { currentDirRef.current = currentDir }, [currentDir])
 
   const currentFilePath = activeTabPath
-  const code = openTabs.find(t => t.path === activeTabPath)?.content ?? '// Seleziona un file dalla barra laterale per iniziare a lavorare'
+  const activeTab = openTabs.find(t => t.path === activeTabPath)
+  const code = activeTab?.content ?? '// Seleziona un file dalla barra laterale per iniziare a lavorare'
 
   useEffect(() => {
     // Carica la cartella iniziale di progetto (il Backend capirà che vuoto significa process.cwd())
@@ -325,6 +332,20 @@ function App() {
       return
     }
     try {
+      if (IMAGE_EXTENSIONS.test(filePath)) {
+        // @ts-ignore
+        const result = await window.ipcRenderer.invoke('read-image-file', filePath)
+        if (result.success) {
+          setOpenTabs(prev => [...prev, {
+            path: filePath, content: result.rawText, isDirty: false,
+            isImage: true, imageDataUrl: result.dataUrl, imageViewMode: 'image'
+          }])
+          setActiveTabPath(filePath)
+        } else {
+          console.error('Failed to read image file:', result.error)
+        }
+        return
+      }
       // @ts-ignore
       const result = await window.ipcRenderer.invoke('read-file', filePath)
       if (result.success) {
@@ -335,6 +356,56 @@ function App() {
       }
     } catch (e) {
       console.error(e)
+    }
+  }
+
+  const toggleImageViewMode = () => {
+    setOpenTabs(prev => prev.map(t => t.path === activeTabPath
+      ? { ...t, imageViewMode: t.imageViewMode === 'image' ? 'code' : 'image' }
+      : t))
+  }
+
+  const [isStrippingMetadata, setIsStrippingMetadata] = useState(false)
+  // Modale (non un testo inline che affollerebbe la barra azioni): mostrata
+  // una volta a operazione conclusa, poi il pulsante stesso sparisce se il
+  // file risulta pulito — riproporlo non avrebbe più senso.
+  const [metadataModalMessage, setMetadataModalMessage] = useState<string | null>(null)
+  const [metadataModalIsError, setMetadataModalIsError] = useState(false)
+
+  const stripImageMetadata = async () => {
+    if (!activeTabPath) return
+    setIsStrippingMetadata(true)
+    try {
+      // @ts-ignore
+      const result = await window.ipcRenderer.invoke('strip-image-metadata', activeTabPath)
+      if (!result.success) {
+        setMetadataModalIsError(true)
+        setMetadataModalMessage(result.error)
+        return
+      }
+      if (result.removedChunks.length === 0) {
+        setMetadataModalIsError(false)
+        setMetadataModalMessage('Nessun metadato testuale trovato — il file era già pulito da firme/provenienza AI.')
+        setOpenTabs(prev => prev.map(t => t.path === activeTabPath ? { ...t, metadataClean: true } : t))
+        return
+      }
+      setMetadataModalIsError(false)
+      setMetadataModalMessage(`File ripulito: rimossi ${result.removedChunks.join(', ')} (-${result.bytesRemoved} byte). Il file su disco è già stato riscritto senza metadati testuali/firma AI.`)
+      // Ricarica il file dal disco per riflettere il contenuto appena riscritto
+      // sia nella vista immagine (invariata, i pixel non cambiano) sia in quella
+      // codice (ora senza le stringhe di metadati appena rimosse).
+      // @ts-ignore
+      const reloaded = await window.ipcRenderer.invoke('read-image-file', activeTabPath)
+      if (reloaded.success) {
+        setOpenTabs(prev => prev.map(t => t.path === activeTabPath
+          ? { ...t, content: reloaded.rawText, imageDataUrl: reloaded.dataUrl, metadataClean: true }
+          : t))
+      }
+    } catch (e: any) {
+      setMetadataModalIsError(true)
+      setMetadataModalMessage(e.message)
+    } finally {
+      setIsStrippingMetadata(false)
     }
   }
 
@@ -515,10 +586,21 @@ function App() {
                   loadFile(file.path)
                 }
               }}
-              className={`py-1 px-2 hover:bg-[#37373d] cursor-pointer text-sm rounded flex items-center gap-2 ${activeTabPath === file.path ? 'bg-[#37373d]' : ''}`}
+              className={`group py-1 px-2 hover:bg-[#37373d] cursor-pointer text-sm rounded flex items-center gap-2 ${activeTabPath === file.path ? 'bg-[#37373d]' : ''}`}
             >
               <span className="text-gray-400">{file.isDirectory ? '📁' : '📄'}</span>
-              <span className="truncate">{file.name}</span>
+              <span className="truncate flex-1">{file.name}</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  // @ts-ignore
+                  window.ipcRenderer.invoke('reveal-in-folder', file.path)
+                }}
+                className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-white shrink-0 px-1 rounded hover:bg-[#4d4d54]"
+                title="Mostra nel Finder"
+              >
+                📂
+              </button>
             </div>
           ))}
 
@@ -543,6 +625,24 @@ function App() {
       </div>
 
       {isSettingsOpen && <SettingsPanel onClose={() => setIsSettingsOpen(false)} currentProjectRoot={currentDir} />}
+
+      {metadataModalMessage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setMetadataModalMessage(null)}>
+          <div className="bg-[#252526] border border-[#444] rounded-lg shadow-2xl max-w-md w-full mx-4 p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-2xl">{metadataModalIsError ? '❌' : '✅'}</span>
+              <span className="text-sm font-semibold text-gray-200">{metadataModalIsError ? 'Errore durante la pulizia' : 'File pulito dai metadati'}</span>
+            </div>
+            <p className="text-sm text-gray-300 mb-4">{metadataModalMessage}</p>
+            <button
+              onClick={() => setMetadataModalMessage(null)}
+              className="w-full text-sm px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Editor Area */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -581,7 +681,40 @@ function App() {
           </div>
 
           {/* Actions */}
-          {activeTabPath && (
+          {activeTabPath && activeTab?.isImage && (
+            <div className="flex items-center gap-2 shrink-0 min-w-0">
+              {/* Righe/metadati testuali dei generatori AI (Gemini, ecc.) sono
+                  leggibili solo in vista "Codice" — il pulsante appare solo lì.
+                  Sparisce del tutto una volta che il file risulta pulito
+                  (metadataClean): riproporlo non avrebbe più senso, l'esito
+                  è già stato comunicato dalla modale. */}
+              {activeTab.imageViewMode === 'code' && !activeTab.metadataClean && (
+                <button
+                  onClick={stripImageMetadata}
+                  disabled={isStrippingMetadata}
+                  className="text-xs px-3 py-1 rounded transition-colors shrink-0 bg-[#37373d] text-gray-300 hover:bg-[#4d4d54] disabled:opacity-50"
+                  title="Rimuove i metadati testuali (firma/provenienza AI: tEXt/iTXt PNG, EXIF/XMP JPEG) senza toccare i pixel"
+                >
+                  {isStrippingMetadata ? 'Rimozione...' : '🧹 Rimuovi metadati/firma AI'}
+                </button>
+              )}
+              <div className="flex text-xs rounded overflow-hidden border border-[#444] shrink-0">
+                <button
+                  onClick={() => activeTab.imageViewMode !== 'image' && toggleImageViewMode()}
+                  className={`px-3 py-1 ${activeTab.imageViewMode === 'image' ? 'bg-blue-600 text-white' : 'bg-[#37373d] text-gray-300 hover:bg-[#4d4d54]'}`}
+                >
+                  🖼️ Immagine
+                </button>
+                <button
+                  onClick={() => activeTab.imageViewMode !== 'code' && toggleImageViewMode()}
+                  className={`px-3 py-1 ${activeTab.imageViewMode === 'code' ? 'bg-blue-600 text-white' : 'bg-[#37373d] text-gray-300 hover:bg-[#4d4d54]'}`}
+                >
+                  📝 Codice
+                </button>
+              </div>
+            </div>
+          )}
+          {activeTabPath && !activeTab?.isImage && (
             <button
               onClick={handleSave}
               className={`text-xs px-3 py-1 rounded transition-colors shrink-0 ${isSaving ? 'bg-green-600 text-white' : 'bg-[#37373d] text-gray-300 hover:bg-[#4d4d54]'}`}
@@ -598,6 +731,14 @@ function App() {
                <img src="favicon.svg" className="w-32 h-32 opacity-10 grayscale" alt="Logo" />
             </div>
           )}
+          {activeTab?.isImage && activeTab.imageViewMode === 'image' ? (
+            <div
+              className="absolute inset-0 flex items-center justify-center overflow-auto p-8"
+              style={{ backgroundImage: 'linear-gradient(45deg, #2a2a2a 25%, transparent 25%), linear-gradient(-45deg, #2a2a2a 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #2a2a2a 75%), linear-gradient(-45deg, transparent 75%, #2a2a2a 75%)', backgroundSize: '20px 20px', backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px', backgroundColor: '#1e1e1e' }}
+            >
+              <img src={activeTab.imageDataUrl} alt={fileName(activeTab.path)} className="max-w-full max-h-full object-contain shadow-2xl" />
+            </div>
+          ) : (
           <Editor
             height="100%"
             path={activeTabPath || undefined}
@@ -610,12 +751,13 @@ function App() {
               minimap: { enabled: false },
               fontSize: 14,
               wordWrap: 'on',
-              readOnly: !activeTabPath, // Blocca la scrittura se non ci sono file aperti
+              readOnly: !activeTabPath || activeTab?.isImage, // Blocca la scrittura se non ci sono file aperti, o se è la vista grezza di un'immagine (salvare testo modificato sopra byte binari la corromperebbe)
               fontFamily: "'Fira Code', 'JetBrains Mono', 'Courier New', monospace",
               inlineSuggest: { enabled: true },
               lineNumbers: 'on'
             }}
           />
+          )}
         </div>
 
         {/* Terminal Area */}

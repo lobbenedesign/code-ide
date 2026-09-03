@@ -498,6 +498,29 @@ export interface ToolStepResult {
   stepsExecuted: ToolStep[] // i tool effettivamente chiamati in QUESTO step (per mostrarli in UI)
 }
 
+// Stesso bug osservato dal vivo in Agent Mode (harness.ts) esiste anche qui:
+// un modello locale può scrivere la chiamata a tool come TESTO
+// ('{"name": "ocr_image", "arguments": {...}}' nel messaggio) invece di
+// popolare davvero tool_calls — senza questo recupero, il ramo 'done: true'
+// qui sotto la tratterebbe come risposta finale e il tool non verrebbe mai
+// eseguito, con l'utente che vede il JSON grezzo al posto del risultato.
+function tryRecoverToolCallFromText(content: string | undefined, availableTools: any[]): { id: string, function: { name: string, arguments: any } } | null {
+  if (!content) return null
+  const match = content.match(/\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}/)
+  if (!match) return null
+
+  const toolNames = new Set(availableTools.map(t => t.function.name))
+  if (!toolNames.has(match[1])) return null
+
+  try {
+    const parsed = JSON.parse(match[0])
+    if (!parsed.name || !toolNames.has(parsed.name)) return null
+    return { id: `recovered-${Date.now()}`, function: { name: parsed.name, arguments: parsed.arguments ?? {} } }
+  } catch {
+    return null
+  }
+}
+
 /**
  * Esegue UN singolo step (al più READONLY_TOOL_STEP_SIZE chiamate a tool di
  * sola lettura) della conversazione con 'messages', poi si ferma — che sia
@@ -521,13 +544,18 @@ export async function runReadOnlyToolStep(
     const result = await sendLLMRequest({ model, messages: msgs, tools })
     if (result.resolvedModel) lastResolvedModel = result.resolvedModel
 
-    if (!result.tool_calls || result.tool_calls.length === 0) {
+    const recoveredToolCall = (!result.tool_calls || result.tool_calls.length === 0)
+      ? tryRecoverToolCallFromText(result.content, tools)
+      : null
+    const toolCalls = recoveredToolCall ? [recoveredToolCall] : result.tool_calls
+
+    if (!toolCalls || toolCalls.length === 0) {
       return { done: true, content: result.content, resolvedModel: lastResolvedModel, messages: msgs, stepsExecuted }
     }
 
-    msgs.push({ role: 'assistant', content: result.content || '', tool_calls: result.tool_calls })
+    msgs.push({ role: 'assistant', content: recoveredToolCall ? '' : (result.content || ''), tool_calls: toolCalls })
 
-    for (const toolCall of result.tool_calls) {
+    for (const toolCall of toolCalls) {
       const functionName = toolCall.function.name
       const args = typeof toolCall.function.arguments === 'string'
         ? JSON.parse(toolCall.function.arguments)
