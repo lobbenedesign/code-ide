@@ -1,7 +1,7 @@
 {
   "name": "code-ide",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "IDE desktop con assistente AI agentico locale (Ollama/LM Studio/OmniRoute/OpenRouter), editor Monaco, terminale integrato e skill personalizzabili.",
   "author": "Giuseppe Lobbene",
   "main": "dist-electron/main.js",
