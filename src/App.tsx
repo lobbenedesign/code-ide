@@ -518,8 +518,26 @@ function App() {
     editorRef.current = editor
 
     // Registra l'inline completion provider (Ghost Text FIM)
+    //
+    // D-03 dell'audit: Monaco richiama provideInlineCompletions a ogni
+    // pausa di digitazione, senza debounce né cancellazione — ogni battuta
+    // poteva far partire una generazione COMPLETA verso Ollama, e le
+    // risposte arrivavano/si applicavano in ordine di arrivo, non di
+    // pertinenza (una risposta lenta a un prefisso ormai superato poteva
+    // comparire dopo un suggerimento più recente e corretto). Monaco passa
+    // già un CancellationToken pensato esattamente per questo — prima
+    // ignorato (parametro `_token`) — combinato con un debounce breve prima
+    // di anche solo iniziare la chiamata.
+    const FIM_DEBOUNCE_MS = 250
     monaco.languages.registerInlineCompletionsProvider('*', {
-      provideInlineCompletions: async (model: any, position: any, _context: any, _token: any) => {
+      provideInlineCompletions: async (model: any, position: any, _context: any, token: any) => {
+        // Debounce: aspetta che l'utente si fermi davvero prima di chiamare
+        // il modello. Se arriva un'altra battuta (o Monaco cancella questa
+        // richiesta per un altro motivo) durante l'attesa, il token si
+        // annulla e usciamo subito, senza mai contattare Ollama.
+        await new Promise(resolve => setTimeout(resolve, FIM_DEBOUNCE_MS))
+        if (token.isCancellationRequested) return { items: [] }
+
         // Estraiamo il prefisso (fino a 50 righe prima)
         const startLineNumber = Math.max(1, position.lineNumber - 50)
         const prefixRange = new monaco.Range(startLineNumber, 1, position.lineNumber, position.column)
@@ -534,8 +552,19 @@ function App() {
           return { items: [] }
         }
 
-        // Chiamiamo il nostro engine FIM
-        const completionText = await getFimCompletion(prefix, suffix)
+        // Ponte tra il CancellationToken di Monaco (non un AbortSignal nativo)
+        // e un vero AbortController, cosi' l'annullamento chiude anche la
+        // richiesta HTTP verso Ollama, non solo il suo risultato lato client.
+        const abortController = new AbortController()
+        const cancelSub = token.onCancellationRequested(() => abortController.abort())
+        const completionText = await getFimCompletion(prefix, suffix, undefined, abortController.signal)
+        cancelSub.dispose?.()
+
+        // La richiesta può essere stata superata da una più recente MENTRE
+        // Ollama generava (una generazione FIM impiega tipicamente centinaia
+        // di ms, più del debounce stesso) — un suggerimento per un prefisso
+        // ormai vecchio non va mai inserito.
+        if (token.isCancellationRequested) return { items: [] }
 
         if (completionText) {
           return {
