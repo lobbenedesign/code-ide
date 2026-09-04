@@ -1,3 +1,5 @@
+import { addDebugLog } from './debugLogger'
+
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
@@ -318,6 +320,7 @@ async function callOpenAICompatible(baseURL: string, model: string, messages: Me
 // Router universale per i provider LLM
 export async function sendLLMRequest(request: LLMRequest): Promise<LLMResponse> {
   const { model, messages, tools } = request
+  addDebugLog('info', 'LLM', `Nuova richiesta [${model}] con ${messages.length} messaggi${tools?.length ? ` e ${tools.length} tools` : ''}`)
 
   // Modelli 'realtime:' (audio nativo, WebRTC — vedi NativeAudioPanel.tsx) non
   // hanno un endpoint chat-completions testuale: si parla loro solo a voce, dal
@@ -326,6 +329,7 @@ export async function sendLLMRequest(request: LLMRequest): Promise<LLMResponse> 
   // funzione con un model id letteralmente 'realtime:...', fallendo con un
   // errore poco chiaro invece che con uno che spiega cosa fare.
   if (model.startsWith('realtime:')) {
+    addDebugLog('warn', 'LLM', 'Tentativo di invio testo su modello realtime')
     throw new Error("Questo modello supporta solo conversazione vocale: usa il pulsante 🎙️ invece di scrivere, oppure seleziona un altro modello per la chat testuale.")
   }
 
@@ -333,24 +337,37 @@ export async function sendLLMRequest(request: LLMRequest): Promise<LLMResponse> 
   // il commento su callOmniRouteViaMainProcess: DEVE passare dall'IPC verso il
   // processo main, un fetch() diretto qui viene sempre bloccato da CORS.
   if (model.startsWith('omniroute:')) {
-    return callOmniRouteViaMainProcess(model.slice('omniroute:'.length), messages, tools)
+    addDebugLog('info', 'OmniRoute', `Routing richiesta verso OmniRoute (${model})`)
+    const res = await callOmniRouteViaMainProcess(model.slice('omniroute:'.length), messages, tools)
+    addDebugLog('success', 'OmniRoute', `Risposta completata da OmniRoute (modello: ${res.resolvedModel || model})`)
+    return res
   }
 
   // DuckAI (modelli gratuiti Duck.ai) — prefisso 'duckai:'. Deve essere
   // controllato PRIMA di looksLikeOllamaTag, altrimenti il pattern \w+:\w+
   // lo considera per errore un tag Ollama e fallisce con 404.
   if (model.startsWith('duckai:')) {
+    addDebugLog('info', 'DuckAI', `Richiesta Duck.ai avviata con modello: ${model}`)
     // @ts-ignore
     const res = await window.ipcRenderer.invoke('duckai-chat', { model, messages, tools })
-    if (!res.success) throw new Error(res.error || 'Errore durante la chiamata a DuckAI')
+    if (!res.success) {
+      addDebugLog('error', 'DuckAI', `Errore Duck.ai: ${res.error}`)
+      throw new Error(res.error || 'Errore durante la chiamata a DuckAI')
+    }
+    addDebugLog('success', 'DuckAI', `Risposta ricevuta da Duck.ai (${res.data?.content?.length || 0} caratteri)`)
     return { content: res.data.content, resolvedModel: model }
   }
 
   // Sakana AI (chat.sakana.ai) — prefisso 'sakana:'
   if (model.startsWith('sakana:')) {
+    addDebugLog('info', 'SakanaAI', `Richiesta Sakana AI avviata con modello: ${model}`)
     // @ts-ignore
     const res = await window.ipcRenderer.invoke('sakana-chat', { model, messages, tools })
-    if (!res.success) throw new Error(res.error || 'Errore durante la chiamata a Sakana AI')
+    if (!res.success) {
+      addDebugLog('error', 'SakanaAI', `Errore Sakana AI: ${res.error}`)
+      throw new Error(res.error || 'Errore durante la chiamata a Sakana AI')
+    }
+    addDebugLog('success', 'SakanaAI', `Risposta ricevuta da Sakana AI (${res.data?.content?.length || 0} caratteri)`)
     return { content: res.data.content, resolvedModel: model }
   }
 
@@ -358,6 +375,7 @@ export async function sendLLMRequest(request: LLMRequest): Promise<LLMResponse> 
   // dichiarano (es. qwen2.5, llama3.1+): passiamo 'tools' anche qui, un
   // modello che non lo sa fare lo ignora e risponde a testo normalmente.
   if (looksLikeOllamaTag(model)) {
+    addDebugLog('info', 'Ollama', `Richiesta a modello locale Ollama: ${model}`)
 
     // Ollama richiede l'array 'images' con i raw base64 (senza intestazione data:image/...)
     const ollamaMessages = messages.map(m => {
@@ -381,14 +399,18 @@ export async function sendLLMRequest(request: LLMRequest): Promise<LLMResponse> 
         })
       })
     } catch (err: any) {
+      addDebugLog('error', 'Ollama', `Errore connessione Ollama: ${err.message}`)
       throw new Error(`Errore Ollama: verifica che il demone sia avviato (${err.message}).`)
     }
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => '')
-      throw new Error(`Ollama ha risposto con errore ${response.status}: ${errBody.substring(0, 300) || `modello '${model}' probabilmente non installato — prova "ollama pull ${model}"`}`)
+      const errorMsg = `Ollama ha risposto con errore ${response.status}: ${errBody.substring(0, 300) || `modello '${model}' probabilmente non installato — prova "ollama pull ${model}"`}`
+      addDebugLog('error', 'Ollama', errorMsg)
+      throw new Error(errorMsg)
     }
     const data = await response.json()
+    addDebugLog('success', 'Ollama', `Risposta ricevuta da Ollama (${data.message?.content?.length || 0} caratteri)`)
     return { content: data.message?.content || '', tool_calls: data.message?.tool_calls }
   }
 
@@ -590,9 +612,11 @@ export async function runReadOnlyToolStep(
         ? JSON.parse(toolCall.function.arguments)
         : (toolCall.function.arguments || {})
       stepsExecuted.push({ functionName, args })
+      addDebugLog('info', 'Tool', `Esecuzione tool di lettura: ${functionName}`, args)
       onToolCall?.(functionName, args)
       // @ts-ignore
       const toolResult = await window.ipcRenderer.invoke('run-readonly-tool', { functionName, args, cwd })
+      addDebugLog('success', 'Tool', `Tool [${functionName}] completato`)
       msgs.push({
         role: 'tool',
         name: functionName,

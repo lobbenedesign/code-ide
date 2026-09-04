@@ -20,6 +20,9 @@ release
 # Backups written by the agent's delete_file tool before removing a file
 .code-ide-backups/
 
+# Ad-hoc debugging scripts, not part of the project source
+scratch/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

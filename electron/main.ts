@@ -86,6 +86,27 @@ function createWindow() {
   }
 }
 
+/**
+ * Invia un messaggio di log strutturato alla UI del renderer per il pannello "Log di Debug"
+ */
+export function sendDebugLog(
+  level: 'info' | 'warn' | 'error' | 'net' | 'success',
+  category: string,
+  message: string,
+  details?: any
+) {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('app-debug-log', {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toLocaleTimeString(),
+      level,
+      category,
+      message,
+      details
+    })
+  }
+}
+
 // Percorso radice DELL'APP stessa (non del progetto aperto nell'explorer): usato
 // per trovare src/skills in modo affidabile sia in dev che pacchettizzata, dove
 // process.cwd() non è prevedibile (funzionava solo per coincidenza in dev, dato
@@ -415,6 +436,27 @@ ipcMain.handle('duckai-chat', async (_event, payload: { model: string, messages:
       tools: payload.tools
     })
     return { success: true, data: result }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('duckai-status', async () => {
+  try {
+    const { getDuckAiWindow, isChallengeModalVisible } = await import('./services/duckAi')
+    const win = getDuckAiWindow()
+    const needsVerification = await isChallengeModalVisible(win)
+    return { success: true, needsVerification }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('duckai-open-verification', async () => {
+  try {
+    const { openDuckAiVerification } = await import('./services/duckAi')
+    const success = await openDuckAiVerification()
+    return { success }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

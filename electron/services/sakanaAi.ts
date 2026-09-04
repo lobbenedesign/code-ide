@@ -222,6 +222,24 @@ export async function callSakanaChat(options: SakanaChatOptions): Promise<{ cont
       window.__sakanaDone = false;
       window.__sakanaError = null;
 
+      // Bug segnalato dal vivo: "Errore bootstrap conversazione (401)" sui
+      // modelli non-Fugu, che saltano del tutto checkSakanaAuth() prima di
+      // questo punto. 'did-finish-load' (che sblocca ensureSakanaReady) è
+      // solo il caricamento del DOCUMENTO — su una SPA come chat.sakana.ai
+      // la sessione anonima/il cookie che l'API richiede vengono impostati
+      // dal bootstrap JS lato client DOPO l'hydration di React, che può
+      // ancora essere in corso. Stessa tecnica già usata (e verificata) in
+      // duckAi.ts: attendere che un elemento reale dell'app sia montato
+      // invece di fidarsi del solo evento di caricamento pagina.
+      let hydrated = false;
+      for (let i = 0; i < 20; i++) {
+        if (document.querySelector('textarea') || document.querySelector('[contenteditable="true"]')) { hydrated = true; break; }
+        await new Promise(r => setTimeout(r, 300));
+      }
+      if (!hydrated) {
+        return { error: "L'app di Sakana AI non risulta completamente caricata (elemento di input mai apparso entro 6s) — probabile causa del 401 sul bootstrap se ignorato." };
+      }
+
       try {
         // 1. Bootstrap della conversazione
         const bootRes = await fetch('/api/conversation', {

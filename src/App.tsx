@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import Editor from '@monaco-editor/react'
 import Terminal from './Terminal'
+import DebugLogs from './DebugLogs'
 import AiChat from './AiChat'
 import './index.css'
 import { skillManager } from './SkillManager'
@@ -71,6 +72,7 @@ function App() {
   const [isSaving, setIsSaving] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [metadataRemovalMode, setMetadataRemovalMode] = useState<'all' | 'ai-only' | 'none'>('ai-only')
+  const [bottomPanelTab, setBottomPanelTab] = useState<'terminal' | 'debug'>('terminal')
   const editorRef = useRef<any>(null)
   const decorationsRef = useRef<string[]>([])
   const openTabsRef = useRef<OpenTab[]>([])
@@ -806,13 +808,37 @@ function App() {
           )}
         </div>
 
-        {/* Terminal Area */}
+        {/* Terminal & Debug Area */}
         <div className="h-64 flex flex-col shrink-0">
-          <div className="px-4 py-1 bg-[#252526] text-xs font-semibold text-gray-400 border-t border-[#333] uppercase tracking-wider">
-            Terminale
+          <div className="flex items-center justify-between px-2 bg-[#252526] border-t border-[#333]">
+            <div className="flex items-center space-x-1">
+              <button
+                onClick={() => setBottomPanelTab('terminal')}
+                className={`px-3 py-1.5 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 transition-colors border-b-2 ${
+                  bottomPanelTab === 'terminal'
+                    ? 'text-white border-blue-500 bg-[#1e1e1e]'
+                    : 'text-gray-400 border-transparent hover:text-gray-200 hover:bg-[#2d2d2d]'
+                }`}
+              >
+                <span>💻</span> Terminale
+              </button>
+              <button
+                onClick={() => setBottomPanelTab('debug')}
+                className={`px-3 py-1.5 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 transition-colors border-b-2 ${
+                  bottomPanelTab === 'debug'
+                    ? 'text-white border-blue-500 bg-[#1e1e1e]'
+                    : 'text-gray-400 border-transparent hover:text-gray-200 hover:bg-[#2d2d2d]'
+                }`}
+              >
+                <span>🔍</span> Log di Debug
+              </button>
+            </div>
           </div>
-          <div className="flex-1 min-h-0">
+          <div className={`flex-1 min-h-0 ${bottomPanelTab === 'terminal' ? 'block' : 'hidden'}`}>
             <Terminal cwd={currentDir} />
+          </div>
+          <div className={`flex-1 min-h-0 ${bottomPanelTab === 'debug' ? 'block' : 'hidden'}`}>
+            <DebugLogs />
           </div>
         </div>
       </div>
