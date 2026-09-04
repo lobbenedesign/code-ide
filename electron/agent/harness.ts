@@ -268,6 +268,10 @@ export async function runAgenticTask(
           const permissionCheck = checkToolCallAllowed(cwd, functionName, parsedArgs)
           if (!permissionCheck.allowed) {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🚫 Permesso negato: ${functionName}]` }, runId)
+            mainWindow.webContents.send('agent-tool-event', {
+              runId, functionName, args: parsedArgs, success: false,
+              resultPreview: `🚫 ${permissionCheck.reason}`, timestamp: Date.now()
+            })
             messages.push({ role: 'tool', name: functionName, content: `🚫 ${permissionCheck.reason}` })
             continue
           }
@@ -401,6 +405,19 @@ export async function runAgenticTask(
 
           // Notifica UI del risultato
           broadcastAgentStream(mainWindow, { type: 'status', message: `[✅ Tool completato]` }, runId)
+
+          // N-02 dell'audit: la UI aveva già tutti i pezzi per una "ricevuta"
+          // di run rivedibile (todo list, checkpoint, screenshot, esito
+          // diagnostica) ma li disperdeva in un log di testo a scorrimento.
+          // Questo evento strutturato (in aggiunta al log, non al suo posto)
+          // dà al renderer un elenco vero di {tool, esito, anteprima} per
+          // run — l'harness già CALCOLA tutto questo, mancava solo il canale.
+          mainWindow.webContents.send('agent-tool-event', {
+            runId, functionName, args: parsedArgs,
+            success: !toolResult.startsWith('❌') && !toolResult.startsWith('🚫'),
+            resultPreview: toolResult.slice(0, 300),
+            timestamp: Date.now()
+          })
 
           // Aggiungi il risultato alla conversazione
           messages.push({

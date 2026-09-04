@@ -36,6 +36,14 @@ interface TodoItem {
   status: 'pending' | 'in_progress' | 'completed'
 }
 
+interface ToolEventEntry {
+  functionName: string
+  args: any
+  success: boolean
+  resultPreview: string
+  timestamp: number
+}
+
 interface CommandDefinition {
   name: string
   description: string
@@ -74,6 +82,32 @@ const WRITE_INTENT_PATTERN = new RegExp(
   ].join('|') + ')\\b',
   'i'
 )
+
+// N-02: etichetta compatta e leggibile per un evento della ricevuta di run —
+// solo gli argomenti che identificano DAVVERO cosa è successo (il percorso,
+// la query, il comando), non l'intero oggetto args grezzo.
+function formatToolEventLabel(ev: ToolEventEntry): string {
+  const a = ev.args || {}
+  switch (ev.functionName) {
+    case 'edit_file': case 'patch_file': return `${ev.functionName}: ${a.filePath}`
+    case 'read_file': return `read_file: ${a.filePath}`
+    case 'delete_file': return `delete_file: ${a.filePath}`
+    case 'delete_folder': return `delete_folder: ${a.folderPath}`
+    case 'create_folder': return `create_folder: ${a.folderPath}`
+    case 'move_file': return `move_file: ${a.sourcePath} → ${a.destinationPath}`
+    case 'search_codebase': return `search_codebase: "${a.query}"`
+    case 'run_terminal_command': return `run_terminal_command: ${a.command}`
+    case 'get_diagnostics': return `get_diagnostics: ${a.filePath}`
+    case 'ocr_image': return `ocr_image: ${a.imagePath}`
+    case 'browser_navigate': return `browser_navigate${a.stealthy ? ' (stealth)' : ''}: ${a.url}`
+    case 'browser_screenshot': return 'browser_screenshot'
+    case 'manage_git': return `manage_git: ${a.action}`
+    case 'write_todos': return 'write_todos'
+    case 'web_search': return `web_search: "${a.query}"`
+    case 'fetch_webpage': return `fetch_webpage: ${a.url}`
+    default: return ev.functionName
+  }
+}
 
 const WELCOME_MESSAGE: Message = {
   id: '1',
@@ -157,6 +191,10 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   const [agentTodos, setAgentTodos] = useState<TodoItem[]>([])
   const [checkpointsByRunId, setCheckpointsByRunId] = useState<Record<string, { fileCount: number; taskSummary: string }>>({})
   const [revertingRunId, setRevertingRunId] = useState<string | null>(null)
+  // N-02: ricevuta di run rivedibile (elenco strutturato dei tool eseguiti,
+  // non il log di testo a scorrimento) — vedi 'agent-tool-event' in harness.ts.
+  const [runEvents, setRunEvents] = useState<Record<string, ToolEventEntry[]>>({})
+  const [expandedReceiptRunId, setExpandedReceiptRunId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -461,6 +499,31 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     return () => {
       // @ts-ignore
       if (removeCheckpoint && typeof removeCheckpoint === 'function') removeCheckpoint()
+    }
+  }, [])
+
+  useEffect(() => {
+    // N-02: accumula gli eventi strutturati per run — la ricevuta finale
+    // (vedi il pulsante "📋 Ricevuta" sul messaggio finale) li legge da qui
+    // invece di dover riparsare il log testuale a scorrimento.
+    // @ts-ignore
+    const removeToolEvent = window.ipcRenderer.on('agent-tool-event', (_event: any, payload: any) => {
+      if (!payload.runId) return
+      setRunEvents(prev => ({
+        ...prev,
+        [payload.runId]: [...(prev[payload.runId] || []), {
+          functionName: payload.functionName,
+          args: payload.args,
+          success: payload.success,
+          resultPreview: payload.resultPreview,
+          timestamp: payload.timestamp
+        }]
+      }))
+    })
+
+    return () => {
+      // @ts-ignore
+      if (removeToolEvent && typeof removeToolEvent === 'function') removeToolEvent()
     }
   }, [])
 
@@ -1374,6 +1437,31 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
               >
                 {revertingRunId === msg.runId ? '⏳ Annullamento...' : `↩️ Annulla modifiche (${checkpointsByRunId[msg.runId].fileCount} file)`}
               </button>
+            )}
+            {msg.runId && runEvents[msg.runId] && runEvents[msg.runId].length > 0 && (
+              <div className="mt-1 self-start w-full max-w-full">
+                <button
+                  onClick={() => setExpandedReceiptRunId(expandedReceiptRunId === msg.runId ? null : (msg.runId as string))}
+                  className="text-[10px] px-2 py-1 bg-[#2a2a2a] hover:bg-[#333] text-gray-300 rounded flex items-center gap-1"
+                  title="Elenco strutturato dei tool eseguiti in questo run, invece del solo log a scorrimento"
+                >
+                  📋 Ricevuta ({runEvents[msg.runId].length} {runEvents[msg.runId].length === 1 ? 'azione' : 'azioni'})
+                  <span>{expandedReceiptRunId === msg.runId ? '▲' : '▼'}</span>
+                </button>
+                {expandedReceiptRunId === msg.runId && (
+                  <div className="mt-1 border border-[#333] rounded bg-[#1a1a1a] divide-y divide-[#2a2a2a] max-h-64 overflow-y-auto">
+                    {runEvents[msg.runId].map((ev, i) => (
+                      <div key={i} className="px-2 py-1.5 text-[11px] flex items-start gap-2">
+                        <span className="shrink-0">{ev.success ? '✅' : '❌'}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-gray-300 font-mono truncate" title={formatToolEventLabel(ev)}>{formatToolEventLabel(ev)}</div>
+                          <div className="text-gray-500 truncate" title={ev.resultPreview}>{ev.resultPreview.replace(/\n/g, ' ')}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
             {msg.role === 'user' && (
               <div className="flex gap-1 mt-1">
