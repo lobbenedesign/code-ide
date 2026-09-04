@@ -1,10 +1,10 @@
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 import * as dotenv from 'dotenv'
 
 dotenv.config()
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 // 'git add .' stage TUTTO ciò che è nella working tree, incluso qualsiasi file
 // non ancora ignorato da .gitignore — se lì dentro c'è un .env, una chiave
@@ -22,7 +22,7 @@ const SECRET_FILENAME_PATTERNS = [
 ]
 
 async function findSecretLikeFiles(cwd: string): Promise<string[]> {
-  const { stdout } = await execAsync('git status --porcelain', { cwd })
+  const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd })
   const files = stdout.split('\n')
     .map(line => line.slice(3).trim()) // rimuove il codice di stato a 2 caratteri + spazio
     .filter(Boolean)
@@ -62,7 +62,7 @@ export async function executeGitHubPublish(cwd: string, repoName: string, isPriv
     // 1. Controlla se c'è un repository git locale
     let isGitRepo = false
     try {
-      await execAsync('git status', { cwd })
+      await execFileAsync('git', ['status'], { cwd })
       isGitRepo = true
     } catch {
       // Non è un repository git, inizializziamolo
@@ -76,10 +76,10 @@ export async function executeGitHubPublish(cwd: string, repoName: string, isPriv
     }
 
     if (!isGitRepo) {
-      await execAsync('git init', { cwd })
-      await execAsync('git add .', { cwd })
+      await execFileAsync('git', ['init'], { cwd })
+      await execFileAsync('git', ['add', '.'], { cwd })
       try {
-        await execAsync('git commit -m "Initial commit from Code-IDE"', { cwd })
+        await execFileAsync('git', ['commit', '-m', 'Initial commit from Code-IDE'], { cwd })
       } catch (e: any) {
         if (!e.message.includes('nothing to commit')) {
           throw e
@@ -87,9 +87,9 @@ export async function executeGitHubPublish(cwd: string, repoName: string, isPriv
       }
     } else {
       // È già un repo, facciamo comunque una add e commit di sicurezza per l'ultimo stato
-      await execAsync('git add .', { cwd })
+      await execFileAsync('git', ['add', '.'], { cwd })
       try {
-        await execAsync('git commit -m "Update prima del push su GitHub via Code-IDE"', { cwd })
+        await execFileAsync('git', ['commit', '-m', 'Update prima del push su GitHub via Code-IDE'], { cwd })
       } catch (_e: any) {
         // Ignora se non c'è nulla da committare
       }
@@ -139,16 +139,16 @@ async function pushToRemote(cwd: string, remoteUrl: string): Promise<string> {
   try {
     // Configura il remote (se esiste già, aggiornalo o gestisci l'errore)
     try {
-      await execAsync(`git remote add origin ${remoteUrl}`, { cwd })
+      await execFileAsync('git', ['remote', 'add', 'origin', remoteUrl], { cwd })
     } catch {
-      await execAsync(`git remote set-url origin ${remoteUrl}`, { cwd })
+      await execFileAsync('git', ['remote', 'set-url', 'origin', remoteUrl], { cwd })
     }
 
     // Assicuriamoci di essere sul branch main
-    await execAsync('git branch -M main', { cwd })
-    
+    await execFileAsync('git', ['branch', '-M', 'main'], { cwd })
+
     // Esegue il push
-    await execAsync('git push -u origin main', { cwd })
+    await execFileAsync('git', ['push', '-u', 'origin', 'main'], { cwd })
 
     // Non ritorniamo l'URL col token in chiaro
     const safeUrl = remoteUrl.replace(/:[^@]+@/, '@')

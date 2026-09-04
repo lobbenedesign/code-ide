@@ -1,7 +1,7 @@
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export const GitToolDefinition = {
   type: "function",
@@ -29,17 +29,21 @@ export const GitToolDefinition = {
 export async function executeGit(args: any, cwd: string): Promise<string> {
   try {
     if (args.action === 'status') {
-      const { stdout } = await execAsync('git status -s', { cwd })
+      const { stdout } = await execFileAsync('git', ['status', '-s'], { cwd })
       return stdout || "Nessun file modificato (working tree clean)."
     } else if (args.action === 'diff') {
-      const { stdout } = await execAsync('git diff', { cwd })
+      const { stdout } = await execFileAsync('git', ['diff'], { cwd, maxBuffer: 10 * 1024 * 1024 })
       return stdout.substring(0, 5000) || "Nessuna differenza non stagiata."
     } else if (args.action === 'commit') {
       if (!args.commit_message) {
         return "❌ Errore: commit_message mancante."
       }
-      await execAsync('git add .', { cwd })
-      const { stdout } = await execAsync(`git commit -m "${args.commit_message.replace(/"/g, '\\"')}"`, { cwd })
+      await execFileAsync('git', ['add', '.'], { cwd })
+      // D-01 dell'audit: execFile con argomenti come array, non più una
+      // stringa di comando con la shell — il messaggio (testo dell'LLM,
+      // potenzialmente prompt-injected) arriva come UN argv, non come testo
+      // che sh possa reinterpretare (niente $(...) o backtick da espandere).
+      const { stdout } = await execFileAsync('git', ['commit', '-m', args.commit_message], { cwd })
       return `✅ Commit creato:\n${stdout}`
     }
     
