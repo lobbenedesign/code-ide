@@ -87,9 +87,11 @@ const WRITE_TOOLS = [
 // un tool DAVVERO disponibile in questo run — altrimenti un testo qualsiasi
 // che per caso somiglia a JSON verrebbe eseguito come comando, un rischio
 // inaccettabile per un harness che scrive/esegue in autonomia.
-function tryRecoverToolCallFromText(content: string, availableTools: any[]): { id: string, function: { name: string, arguments: any } } | null {
+export function tryRecoverToolCallFromText(content: string, availableTools: any[]): { id: string, function: { name: string, arguments: any } } | null {
   if (!content) return null
-  const match = content.match(/\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}/)
+  const jsonBlockMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/)
+  const targetStr = jsonBlockMatch ? jsonBlockMatch[1] : content
+  const match = targetStr.match(/\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}/)
   if (!match) return null
 
   const toolNames = new Set(availableTools.map(t => t.function.name))
@@ -98,7 +100,8 @@ function tryRecoverToolCallFromText(content: string, availableTools: any[]): { i
   try {
     const parsed = JSON.parse(match[0])
     if (!parsed.name || !toolNames.has(parsed.name)) return null
-    return { id: `recovered-${Date.now()}`, function: { name: parsed.name, arguments: parsed.arguments ?? {} } }
+    const args = parsed.arguments ?? parsed.parameters ?? parsed.params ?? {}
+    return { id: `recovered-${Date.now()}`, function: { name: parsed.name, arguments: args } }
   } catch {
     return null
   }

@@ -272,6 +272,9 @@ export function getOpenRouterApiKey(): string | null {
 // 'latest', ecc.) falliva su tag reali come 'qwen2.5:7b' che non le contengono,
 // facendoli finire per errore nel branch OpenAI (che poi chiede una API key inutile).
 export function looksLikeOllamaTag(model: string): boolean {
+  if (model.startsWith('sakana:') || model.startsWith('duckai:') || model.startsWith('omniroute:') || model.startsWith('lmstudio:') || model.startsWith('local:') || model.startsWith('openrouter:') || model.startsWith('together:') || model.startsWith('realtime:')) {
+    return false
+  }
   return /^[\w.-]+:[\w.-]+$/.test(model)
 }
 
@@ -331,6 +334,24 @@ export async function sendLLMRequest(request: LLMRequest): Promise<LLMResponse> 
   // processo main, un fetch() diretto qui viene sempre bloccato da CORS.
   if (model.startsWith('omniroute:')) {
     return callOmniRouteViaMainProcess(model.slice('omniroute:'.length), messages, tools)
+  }
+
+  // DuckAI (modelli gratuiti Duck.ai) — prefisso 'duckai:'. Deve essere
+  // controllato PRIMA di looksLikeOllamaTag, altrimenti il pattern \w+:\w+
+  // lo considera per errore un tag Ollama e fallisce con 404.
+  if (model.startsWith('duckai:')) {
+    // @ts-ignore
+    const res = await window.ipcRenderer.invoke('duckai-chat', { model, messages, tools })
+    if (!res.success) throw new Error(res.error || 'Errore durante la chiamata a DuckAI')
+    return { content: res.data.content, resolvedModel: model }
+  }
+
+  // Sakana AI (chat.sakana.ai) — prefisso 'sakana:'
+  if (model.startsWith('sakana:')) {
+    // @ts-ignore
+    const res = await window.ipcRenderer.invoke('sakana-chat', { model, messages, tools })
+    if (!res.success) throw new Error(res.error || 'Errore durante la chiamata a Sakana AI')
+    return { content: res.data.content, resolvedModel: model }
   }
 
   // Ollama (Local) — supporta tool-calling da tempo per i modelli che lo
@@ -504,9 +525,16 @@ export interface ToolStepResult {
 // popolare davvero tool_calls — senza questo recupero, il ramo 'done: true'
 // qui sotto la tratterebbe come risposta finale e il tool non verrebbe mai
 // eseguito, con l'utente che vede il JSON grezzo al posto del risultato.
-function tryRecoverToolCallFromText(content: string | undefined, availableTools: any[]): { id: string, function: { name: string, arguments: any } } | null {
+export function tryRecoverToolCallFromText(content: string | undefined, availableTools: any[]): { id: string, function: { name: string, arguments: any } } | null {
   if (!content) return null
-  const match = content.match(/\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}/)
+  // Stesso riconoscimento di harness.ts (tenuto sincronizzato a mano finché
+  // renderer e main process restano build separate senza un modulo
+  // condiviso): un modello può incollare il JSON dentro un blocco ```json
+  // invece che a testo nudo, e usare 'parameters'/'params' invece di
+  // 'arguments' (entrambi visti dal vivo con modelli diversi).
+  const jsonBlockMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/)
+  const targetStr = jsonBlockMatch ? jsonBlockMatch[1] : content
+  const match = targetStr.match(/\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}/)
   if (!match) return null
 
   const toolNames = new Set(availableTools.map(t => t.function.name))
@@ -515,7 +543,8 @@ function tryRecoverToolCallFromText(content: string | undefined, availableTools:
   try {
     const parsed = JSON.parse(match[0])
     if (!parsed.name || !toolNames.has(parsed.name)) return null
-    return { id: `recovered-${Date.now()}`, function: { name: parsed.name, arguments: parsed.arguments ?? {} } }
+    const args = parsed.arguments ?? parsed.parameters ?? parsed.params ?? {}
+    return { id: `recovered-${Date.now()}`, function: { name: parsed.name, arguments: args } }
   } catch {
     return null
   }

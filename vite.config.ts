@@ -6,6 +6,11 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  server: {
+    watch: {
+      ignored: ['**/scratch/**', '**/scripts/**', '**/dist-electron/**', '**/*.json']
+    }
+  },
   plugins: [
     react(),
     tailwindcss(),

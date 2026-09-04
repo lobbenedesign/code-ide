@@ -140,6 +140,8 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   } | null>(null)
   const [omniRouteStatus, setOmniRouteStatus] = useState<'checking' | 'installing' | 'starting' | 'ready' | 'unavailable'>('checking')
   const [ollamaModels, setOllamaModels] = useState<string[]>([])
+  const [duckAiModels, setDuckAiModels] = useState<Array<{ id: string, label: string }>>([])
+  const [sakanaAuthed, setSakanaAuthed] = useState(false)
   const [lmStudioModels, setLmStudioModels] = useState<string[]>([])
   const [ollamaContextLengths, setOllamaContextLengths] = useState<Record<string, number>>({})
   const [tokenUsage, setTokenUsage] = useState<{ used: number; window: number } | null>(null)
@@ -312,6 +314,20 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     })
     getLMStudioModels().then(setLmStudioModels)
     getOllamaContextLengths().then(setOllamaContextLengths)
+
+    // Recupera i modelli gratuiti da Duck.ai (auto-discovery con cache)
+    // @ts-ignore
+    window.ipcRenderer.invoke('get-duckai-models').then((res: any) => {
+      if (res?.success && Array.isArray(res.data)) {
+        setDuckAiModels(res.data)
+      }
+    }).catch(() => {})
+
+    // Controlla stato autenticazione Sakana AI
+    // @ts-ignore
+    window.ipcRenderer.invoke('sakana-status').then((res: any) => {
+      if (res?.success) setSakanaAuthed(!!res.authenticated)
+    }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -1112,7 +1128,16 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
         <div className="flex gap-1.5 items-stretch">
         <select
           value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
+          onChange={(e) => {
+            const val = e.target.value
+            setSelectedModel(val)
+            if (val === 'sakana:fugu' && !sakanaAuthed) {
+              // @ts-ignore
+              window.ipcRenderer.invoke('sakana-open-login').then((res: any) => {
+                if (res?.success) setSakanaAuthed(true)
+              }).catch(() => {})
+            }
+          }}
           className="flex-1 min-w-0 bg-[#1e1e1e] text-xs text-gray-300 border border-[#333] rounded px-2 py-1 outline-none"
         >
           <optgroup label={`Locali (Ollama)${ollamaModels.length === 0 ? ' — nessuno trovato' : ''}`}>
@@ -1131,6 +1156,19 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
               ))}
             </optgroup>
           )}
+          {duckAiModels.length > 0 && (
+            <optgroup label="DuckAI (Gratuito, senza chiavi API 🦆)">
+              {duckAiModels.map(m => (
+                <option key={m.id} value={`duckai:${m.id}`}>{m.label}</option>
+              ))}
+            </optgroup>
+          )}
+          <optgroup label="Sakana AI (chat.sakana.ai 🐟)">
+            <option value="sakana:sakana-namazu">Sakana: Namazu (Ragionamento, gratuito)</option>
+            <option value="sakana:fugu">
+              {`Sakana: Fugu (Intelligenza Collettiva ${sakanaAuthed ? '✓ Autenticato' : '🔒 Richiede Login'})`}
+            </option>
+          </optgroup>
           <optgroup label="Audio nativo (conversazione vocale diretta col microfono 🎙️)">
             <option value="realtime:gpt-4o-realtime-preview">GPT-4o Realtime</option>
             <option value="realtime:gpt-4o-mini-realtime-preview">GPT-4o mini Realtime</option>

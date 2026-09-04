@@ -61,6 +61,9 @@ export interface ChatCompletionResult {
 // I nomi di modelli cloud/API (gpt-4o, claude-3-5-sonnet, llama-3.3-70b-groq, ecc.)
 // non hanno mai questo formato: se non lo hanno, Ollama in locale non può servirli.
 function looksLikeOllamaTag(model: string): boolean {
+  if (model.startsWith('sakana:') || model.startsWith('duckai:') || model.startsWith('omniroute:') || model.startsWith('lmstudio:') || model.startsWith('local:') || model.startsWith('openrouter:') || model.startsWith('together:') || model.startsWith('realtime:')) {
+    return false
+  }
   return /^[\w.-]+:[\w.-]+$/.test(model)
 }
 
@@ -186,6 +189,40 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
       `🚫 Limite di sicurezza raggiunto: ${maxCalls} chiamate LLM in questo task (AGENT_MAX_LLM_CALLS_PER_RUN nel .env per modificarlo). ` +
       `Il task viene interrotto per evitare un ciclo fuori controllo (e, con modelli a pagamento, una spesa incontrollata). Riprova con un prompt più mirato.`
     )
+  }
+
+  // DuckAI (modelli gratuiti Duck.ai) — prefisso 'duckai:'
+  if (params.model.startsWith('duckai:')) {
+    const { callDuckAiChat } = await import('../services/duckAi')
+    const res = await callDuckAiChat({
+      model: params.model,
+      messages: params.messages,
+      tools: params.tools
+    })
+    return {
+      message: {
+        role: 'assistant',
+        content: res.content
+      },
+      resolvedModel: params.model
+    }
+  }
+
+  // Sakana AI (chat.sakana.ai) — prefisso 'sakana:'
+  if (params.model.startsWith('sakana:')) {
+    const { callSakanaChat } = await import('../services/sakanaAi')
+    const res = await callSakanaChat({
+      model: params.model,
+      messages: params.messages,
+      tools: params.tools
+    })
+    return {
+      message: {
+        role: 'assistant',
+        content: res.content
+      },
+      resolvedModel: params.model
+    }
   }
 
   // LM Studio (locale, OpenAI-compatibile) — modelli con prefisso 'lmstudio:'

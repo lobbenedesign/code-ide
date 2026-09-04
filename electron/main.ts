@@ -374,6 +374,67 @@ ipcMain.handle('strip-image-metadata', async (_event, filePath: string, options?
   }
 })
 
+// Auto-discovery e chat per i modelli gratuiti di Duck.ai
+ipcMain.handle('get-duckai-models', async () => {
+  try {
+    const { discoverDuckAiModels } = await import('./services/duckAiDiscovery')
+    const models = await discoverDuckAiModels()
+    return { success: true, data: models }
+  } catch (error: any) {
+    const { getCachedOrDefaultModels } = await import('./services/duckAiDiscovery')
+    return { success: true, data: getCachedOrDefaultModels() }
+  }
+})
+
+ipcMain.handle('duckai-chat', async (_event, payload: { model: string, messages: any[], tools?: any[] }) => {
+  try {
+    const { callDuckAiChat } = await import('./services/duckAi')
+    const result = await callDuckAiChat({
+      model: payload.model,
+      messages: payload.messages,
+      tools: payload.tools
+    })
+    return { success: true, data: result }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+// Gestione autenticazione e chat per Sakana AI (chat.sakana.ai)
+ipcMain.handle('sakana-status', async () => {
+  try {
+    const { checkSakanaAuth } = await import('./services/sakanaAi')
+    const authenticated = await checkSakanaAuth()
+    return { success: true, authenticated }
+  } catch (error: any) {
+    return { success: false, authenticated: false, error: error.message }
+  }
+})
+
+ipcMain.handle('sakana-open-login', async () => {
+  try {
+    const { openSakanaLogin } = await import('./services/sakanaAi')
+    const success = await openSakanaLogin()
+    return { success }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('sakana-chat', async (_event, payload: { model: string, messages: any[], tools?: any[] }) => {
+  try {
+    const { callSakanaChat } = await import('./services/sakanaAi')
+    const result = await callSakanaChat({
+      model: payload.model,
+      messages: payload.messages,
+      tools: payload.tools
+    })
+    return { success: true, data: result }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
 // Persistenza delle sessioni di chat: vivono in userData (dati personali
 // dell'utente), non nel progetto — la conversazione sopravvive alla chiusura
 // dell'app, a differenza di prima quando viveva solo in uno useState di React.
