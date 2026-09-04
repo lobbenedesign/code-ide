@@ -584,6 +584,20 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
         }
       }
 
+      // 2.1 Regole di progetto standard (AGENTS.md/CLAUDE.md) se presenti
+      // nella root — convenzione condivisa da più IDE agentici: un repo che
+      // già le dichiara non deve doverle ripetere a voce ogni sessione.
+      let repoRulesContext = ''
+      if (currentProjectRoot) {
+        // @ts-ignore
+        const rulesResult = await window.ipcRenderer.invoke('read-repo-rules', currentProjectRoot)
+        if (rulesResult.success) {
+          for (const rule of rulesResult.data as { fileName: string, content: string }[]) {
+            repoRulesContext += `\n[Regole di progetto da ${rule.fileName} — SEGUILE:]\n${rule.content}\n`
+          }
+        }
+      }
+
       // 3. Skills Context: rivaluta il matching sul messaggio appena inviato
       // (oltre al file attivo), cosi' le keyword nel testo dell'utente attivano
       // davvero le skill corrispondenti.
@@ -593,7 +607,7 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
       const toolsHint = currentProjectRoot
         ? "\n[Hai a disposizione i tool 'read_file', 'search_codebase', 'get_repo_map' e 'get_diagnostics' per leggere DAVVERO il contenuto di qualunque file elencato nell'albero, prima di rispondere — usali quando ti serve vedere del codice reale invece di indovinare dal solo nome del file o dalla mappa dei simboli. Non hai accesso di scrittura: puoi solo leggere/investigare.]\n"
         : ''
-      const systemPrompt = `Sei l'Assistente AI di Code-IDE.\n\n${skillsContext}\n${projectContext}${toolsHint}\n${fileContext}${mentionContext}${attachmentContext}`
+      const systemPrompt = `Sei l'Assistente AI di Code-IDE.\n\n${skillsContext}\n${projectContext}${repoRulesContext}${toolsHint}\n${fileContext}${mentionContext}${attachmentContext}`
 
       // Contatore token: stima sull'intero payload che sta per partire (system
       // prompt + storico conversazione + nuovo messaggio), confrontata con la

@@ -355,6 +355,26 @@ ipcMain.handle('reveal-in-folder', (_event, filePath: string) => {
   shell.showItemInFolder(filePath)
 })
 
+// N-01 dell'audit: AGENTS.md (convenzione condivisa da Antigravity, Claude
+// Code e Cursor) e CLAUDE.md (quella di Claude Code) nella root del progetto
+// aperto non venivano letti affatto — un repo che già dichiara le proprie
+// regole per un agente doveva ripeterle a voce ogni sessione. Entrambi i
+// file, se presenti, vengono iniettati nel system prompt (vedi AiChat.tsx).
+const REPO_RULES_FILENAMES = ['AGENTS.md', 'CLAUDE.md']
+
+ipcMain.handle('read-repo-rules', async (_event, projectRoot: string) => {
+  const rules: { fileName: string, content: string }[] = []
+  for (const fileName of REPO_RULES_FILENAMES) {
+    try {
+      const content = await fs.readFile(path.join(projectRoot, fileName), 'utf-8')
+      if (content.trim()) rules.push({ fileName, content })
+    } catch {
+      // file assente: normale, non un errore da segnalare
+    }
+  }
+  return { success: true, data: rules }
+})
+
 // Rimuove i chunk/marker di metadati testuali (PNG tEXt/zTXt/iTXt/eXIf/tIME,
 // JPEG APP1/APP13/COM) da un'immagine — dove i generatori AI incorporano la
 // loro firma/provenienza — sovrascrivendo il file. Pura manipolazione dei
