@@ -376,9 +376,20 @@ export async function callDuckAiChat(options: DuckAiChatOptions): Promise<{ cont
             }
             // Rilettura del pulsante DOPO il click: solo questo conferma che
             // il cambio sia riuscito davvero, non solo che sia stato tentato.
-            const modelBtnAfter = Array.from(document.querySelectorAll('button')).find(b => b.getAttribute('aria-haspopup') === 'menu');
-            modelSwitch.buttonTextAfter = modelBtnAfter ? modelBtnAfter.innerText : '(pulsante modello non trovato dopo il click)';
-            modelSwitch.confirmed = modelBtnAfter ? modelBtnAfter.innerText.toLowerCase().includes(keyword.toLowerCase()) : false;
+            // Verificato dal vivo: una lettura singola a 400ms può cadere in
+            // uno stato transitorio del re-render (il pulsante esiste ma
+            // il suo innerText è momentaneamente vuoto, non "sbagliato") —
+            // quindi si ritenta per qualche centinaio di ms invece di
+            // dichiarare fallimento sulla prima lettura vuota/non combaciante.
+            let textAfter = '';
+            for (let i = 0; i < 8; i++) {
+              const btn = Array.from(document.querySelectorAll('button')).find(b => b.getAttribute('aria-haspopup') === 'menu');
+              textAfter = btn ? btn.innerText : '';
+              if (textAfter && textAfter.toLowerCase().includes(keyword.toLowerCase())) break;
+              await new Promise(r => setTimeout(r, 250));
+            }
+            modelSwitch.buttonTextAfter = textAfter || '(pulsante modello vuoto o non trovato dopo il click, anche dopo aver riprovato per 2s)';
+            modelSwitch.confirmed = textAfter.toLowerCase().includes(keyword.toLowerCase());
           } else if (modelBtn) {
             // Il modello giusto era già attivo: nessun click necessario, ma è comunque una conferma valida.
             modelSwitch.confirmed = true;

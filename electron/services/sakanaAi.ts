@@ -101,17 +101,22 @@ export async function checkSakanaAuth(): Promise<boolean> {
 
     if (hasSessionCookie) return true
 
-    // Verifica nel DOM o tramite API /api/rate-limit/status
+    // Verifica nel DOM: SOLO un segnale positivo reale (un oggetto utente
+    // effettivamente incorporato da Next.js nel payload della pagina), MAI
+    // un'assenza come prova di presenza. Il fallback precedente
+    // ("!hasLoginBtn && buttons.length > 3") era un falso positivo quasi
+    // garantito — qualunque pagina caricata con più di 3 pulsanti e senza
+    // la scritta esatta "Login"/"ログイン" veniva considerata autenticata,
+    // anche a freddo. Questo faceva SALTARE openSakanaLogin() per Fugu (il
+    // "if (!authed)" non scattava mai), quindi nessuna sessione reale veniva
+    // mai stabilita e il bootstrap falliva con 401 — bug segnalato dal vivo
+    // anche dopo aver "fatto il login" via Fugu.
     const win = await ensureSakanaReady()
     const isLoggedIn = await win.webContents.executeJavaScript(`
       (() => {
         try {
           const userStr = window.__next_f ? JSON.stringify(window.__next_f) : '';
-          if (userStr.includes('"user":{') || userStr.includes('"user":{"id"')) return true;
-          // Se non c'è il pulsante ログイン (Login), l'utente è loggato
-          const buttons = Array.from(document.querySelectorAll('button'));
-          const hasLoginBtn = buttons.some(b => b.innerText.includes('ログイン') || b.innerText.includes('Log in'));
-          return !hasLoginBtn && buttons.length > 3;
+          return userStr.includes('"user":{"id"') || /"user"\\s*:\\s*\\{\\s*"id"/.test(userStr);
         } catch {
           return false;
         }
