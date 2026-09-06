@@ -23,6 +23,22 @@ interface Message {
   attachedDocs?: { name: string, content: string }[]
 }
 
+// N-05: rispecchia RunInfo di electron/agent/runRegistry.ts — un run
+// registrato lato main (chat corrente, un task in background lanciato da
+// questo pannello, o persino un messaggio Telegram) tracciato qui per
+// mostrare all'utente più task dell'agente in esecuzione contemporaneamente,
+// non solo quello legato alla bolla di chat corrente.
+interface AgentRunInfo {
+  id: string
+  title: string
+  cwd: string
+  model: string
+  status: 'running' | 'done' | 'error'
+  startedAt: number
+  endedAt?: number
+  lastMessage: string
+}
+
 interface SessionSummary {
   id: string
   title: string
@@ -137,6 +153,12 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionList, setSessionList] = useState<SessionSummary[]>([])
   const [showSessionList, setShowSessionList] = useState(false)
+  // N-05: pannello "Agent Manager" — task in background indipendenti dalla
+  // conversazione corrente, che possono girare in parallelo ad essa.
+  const [showAgentManager, setShowAgentManager] = useState(false)
+  const [backgroundRuns, setBackgroundRuns] = useState<AgentRunInfo[]>([])
+  const [bgTaskPrompt, setBgTaskPrompt] = useState('')
+  const [bgTaskLaunching, setBgTaskLaunching] = useState(false)
   // Evita di salvare la sessione appena caricata (o il messaggio di benvenuto
   // iniziale) come se fosse una modifica dell'utente — solo i cambiamenti reali
   // successivi al caricamento vengono persistiti.
@@ -531,6 +553,33 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     }
   }, [])
 
+  useEffect(() => {
+    // N-05: sincronizza il registro dei run in background. Lo snapshot
+    // iniziale copre il caso in cui il pannello venga aperto a metà di un run
+    // già partito da altrove (es. bot Telegram); gli aggiornamenti live
+    // arrivano poi uno per uno via 'agent-run-registry-update'.
+    // @ts-ignore
+    window.ipcRenderer.invoke('list-agent-runs').then((res: any) => {
+      if (res?.success) setBackgroundRuns(res.data || [])
+    }).catch(() => {})
+
+    // @ts-ignore
+    const removeRunUpdate = window.ipcRenderer.on('agent-run-registry-update', (_event: any, run: AgentRunInfo) => {
+      setBackgroundRuns(prev => {
+        const idx = prev.findIndex(r => r.id === run.id)
+        if (idx === -1) return [run, ...prev]
+        const next = [...prev]
+        next[idx] = run
+        return next
+      })
+    })
+
+    return () => {
+      // @ts-ignore
+      if (removeRunUpdate && typeof removeRunUpdate === 'function') removeRunUpdate()
+    }
+  }, [])
+
   // Aggiorna le skill quando cambia il file attivo (senza testo del messaggio:
   // serve solo per il badge "N Skills", il matching vero avviene in handleSend)
   useEffect(() => {
@@ -545,6 +594,51 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   useEffect(() => {
     scrollToBottom()
   }, [messages, isTyping])
+
+  // N-05: lancia un task in Agent Mode COMPLETAMENTE INDIPENDENTE dalla
+  // conversazione corrente — non tocca `messages`/`isTyping`, così non è
+  // bloccato da (né blocca) un run già in corso nella chat principale. Il
+  // system prompt è volutamente più semplice di quello di sendMessageContent
+  // (niente cronologia/skill/mention, non pertinenti fuori da una
+  // conversazione): stessa composizione minima già usata per la chat di sola
+  // lettura, albero progetto + regole di repo + hint sui tool.
+  const launchBackgroundTask = async () => {
+    const prompt = bgTaskPrompt.trim()
+    if (!prompt || !currentProjectRoot || bgTaskLaunching) return
+    setBgTaskLaunching(true)
+    try {
+      // @ts-ignore
+      const treeResult = await window.ipcRenderer.invoke('get-project-tree', currentProjectRoot)
+      const projectContext = treeResult?.success
+        ? `\n[Il progetto correntemente aperto è: ${currentProjectRoot}]\n[Albero di cartelle e file del progetto:]\n${treeResult.data}\n`
+        : ''
+
+      // @ts-ignore
+      const rulesResult = await window.ipcRenderer.invoke('read-repo-rules', currentProjectRoot)
+      let repoRulesContext = ''
+      if (rulesResult?.success) {
+        for (const rule of rulesResult.data as { fileName: string, content: string }[]) {
+          repoRulesContext += `\n[Regole di progetto da ${rule.fileName} — SEGUILE:]\n${rule.content}\n`
+        }
+      }
+
+      const systemPrompt = `Sei l'Assistente AI di Code-IDE, in esecuzione come task in BACKGROUND (nessuna conversazione collegata, nessuno storico precedente).\n${projectContext}${repoRulesContext}`
+
+      // @ts-ignore
+      const res = await window.ipcRenderer.invoke('run-agent-task', {
+        userPrompt: prompt,
+        systemPrompt,
+        cwd: currentProjectRoot,
+        model: selectedModel,
+        images: [],
+        deepReasoning: 'auto', // task non presidiato: lascia decidere l'euristica (N-04) invece di forzare una scelta
+        planMode: false
+      })
+      if (res?.runId) setBgTaskPrompt('')
+    } finally {
+      setBgTaskLaunching(false)
+    }
+  }
 
   // Estratto da handleSend per essere riusabile anche dal pulsante "rinvia" sui messaggi.
   const sendMessageContent = async (content: string, images?: string[]) => {
@@ -1154,6 +1248,17 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
             >
               🕒 {sessionList.length > 0 ? sessionList.length : ''}
             </button>
+            <button
+              onClick={() => setShowAgentManager(v => !v)}
+              className={`text-[10px] normal-case font-normal border rounded px-1.5 py-0.5 ${
+                backgroundRuns.some(r => r.status === 'running')
+                  ? 'bg-blue-900/50 border-blue-700 text-blue-300 animate-pulse'
+                  : 'bg-[#1e1e1e] border-[#333] text-gray-400 hover:text-white hover:bg-[#333]'
+              }`}
+              title="Agent Manager: lancia ed osserva task in background, in parallelo alla conversazione corrente"
+            >
+              🗂️ {backgroundRuns.filter(r => r.status === 'running').length > 0 ? `${backgroundRuns.filter(r => r.status === 'running').length} attivi` : 'Task'}
+            </button>
           </span>
           {showSessionList && (
             <div className="absolute top-full left-0 mt-1 w-72 max-h-64 overflow-y-auto bg-[#252526] border border-[#444] rounded shadow-lg z-20 normal-case font-normal">
@@ -1365,6 +1470,60 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
           )}
         </div>
       </div>
+
+      {/* N-05: Agent Manager — task in background, indipendenti dalla chat corrente e tra loro */}
+      {showAgentManager && (
+        <div className="mx-3 mt-2 p-2 bg-[#1e1e1e] border border-[#333] rounded shrink-0 flex flex-col gap-2 max-h-64 overflow-y-auto">
+          <div className="flex flex-col gap-1">
+            <div className="text-[10px] uppercase tracking-wide text-gray-500">Nuovo task in background</div>
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={bgTaskPrompt}
+                onChange={(e) => setBgTaskPrompt(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !bgTaskLaunching) launchBackgroundTask() }}
+                placeholder={currentProjectRoot ? 'Descrivi il task da eseguire in parallelo...' : 'Apri prima un progetto'}
+                disabled={!currentProjectRoot || bgTaskLaunching}
+                className="flex-1 min-w-0 bg-[#252526] text-xs text-gray-200 border border-[#444] rounded px-2 py-1 outline-none disabled:opacity-50"
+              />
+              <button
+                onClick={launchBackgroundTask}
+                disabled={!currentProjectRoot || !bgTaskPrompt.trim() || bgTaskLaunching}
+                className="text-xs px-2 py-1 bg-blue-700 hover:bg-blue-600 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded shrink-0"
+                title="Esegue in Agent Mode, in un run indipendente da questa conversazione — puoi continuare a chattare qui mentre gira"
+              >
+                {bgTaskLaunching ? '⏳...' : '▶️ Avvia'}
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-500">Gira in Agent Mode con Deep Reasoning automatico (N-04), sul progetto aperto — non blocca né è bloccato dalla chat qui sopra.</p>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-[10px] uppercase tracking-wide text-gray-500">Task ({backgroundRuns.length})</div>
+            {backgroundRuns.length === 0 ? (
+              <div className="text-xs text-gray-500">Nessun task registrato in questa sessione.</div>
+            ) : (
+              backgroundRuns.map(run => {
+                const durationMs = (run.endedAt || Date.now()) - run.startedAt
+                const durationS = Math.round(durationMs / 1000)
+                return (
+                  <div key={run.id} className="text-xs bg-[#252526] border border-[#333] rounded px-2 py-1.5 flex flex-col gap-0.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate flex-1" title={run.title}>
+                        {run.status === 'running' ? '🔵' : run.status === 'error' ? '🔴' : '🟢'} {run.title || '(task senza descrizione)'}
+                      </span>
+                      <span className="text-gray-500 shrink-0">{durationS}s</span>
+                    </div>
+                    {run.lastMessage && (
+                      <div className="text-gray-500 truncate" title={run.lastMessage}>{run.lastMessage}</div>
+                    )}
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Todo list live dell'agente (tool write_todos) */}
       {agentTodos.length > 0 && (

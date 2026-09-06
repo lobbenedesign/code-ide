@@ -9,6 +9,7 @@ import * as dotenv from 'dotenv'
 import { initTelegramBot, sendTelegramMessage } from './bots/telegram'
 import { initWhatsAppBot, sendWhatsAppMessage } from './bots/whatsapp'
 import { runAgenticTask } from './agent/harness'
+import { setRunRegistryWindow, registerRun, listRuns } from './agent/runRegistry'
 import { resetChatCallCounter } from './agent/llmClient'
 import { saveSession, loadSession, listSessions, deleteSession, type SessionData } from './services/sessionStore'
 import { getUsage, resetUsage } from './services/usageTracker'
@@ -64,6 +65,8 @@ function createWindow() {
       contextIsolation: true,
     },
   })
+
+  setRunRegistryWindow(win)
 
   // Inizializza i bot in background
   initTelegramBot(win)
@@ -815,6 +818,11 @@ ipcMain.on('bot-reply', (event, replyData) => {
 ipcMain.handle('run-agent-task', (_event, data) => {
   const { userPrompt, systemPrompt, cwd, model, images, deepReasoning, planMode } = data
   const runId = randomUUID()
+  // N-05: registra il run PRIMA di lanciarlo, cosi' l'Agent Manager lo vede
+  // "running" fin dal primo istante invece di scoprirlo solo al primo evento
+  // di stream (che potrebbe impiegare secondi ad arrivare, es. in coda dietro
+  // altri run già in corso o in attesa del modello).
+  registerRun(runId, { title: (userPrompt || '').slice(0, 120), cwd: cwd || '', model: model || '' })
   if (win) {
     // Azzera il tetto di sicurezza sulle chiamate LLM (vedi llmClient.ts) a ogni
     // nuovo task: il limite protegge dal ciclo fuori controllo del singolo task,
@@ -836,6 +844,14 @@ ipcMain.handle('run-agent-task', (_event, data) => {
       })
   }
   return { runId }
+})
+
+// N-05: snapshot iniziale per l'Agent Manager al montaggio del pannello — gli
+// aggiornamenti live arrivano poi via 'agent-run-registry-update' (vedi
+// runRegistry.ts/outputBuffer.ts), questo handler serve solo per non partire
+// da una lista vuota se il pannello viene aperto a metà di un run già iniziato.
+ipcMain.handle('list-agent-runs', () => {
+  return { success: true, data: listRuns() }
 })
 
 app.whenReady().then(createWindow)

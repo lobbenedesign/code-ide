@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron'
+import { updateRunFromStreamEvent } from '../agent/runRegistry'
 
 const MAX_CHARS = 4000
 
@@ -28,6 +29,10 @@ export function appendAgentEvent(message: string) {
 export function broadcastAgentStream(mainWindow: BrowserWindow | null, payload: { type: string; message: string; taskFullyVerified?: boolean }, runId?: string) {
   mainWindow?.webContents.send('agent-stream', { ...payload, runId })
   appendAgentEvent(payload.message)
+  // N-05: aggiorna il registro dei run in background con l'ultimo stato noto —
+  // vedi runRegistry.ts. Se runId non è registrato lì (nessuna registerRun()
+  // chiamata per quell'id) l'aggiornamento è un no-op sicuro.
+  if (runId) updateRunFromStreamEvent(runId, payload.type, payload.message)
 }
 
 export function getRecentOutput(): string {
