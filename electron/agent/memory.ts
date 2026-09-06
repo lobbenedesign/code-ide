@@ -54,3 +54,16 @@ export function getProjectMemories(projectPath: string): { key: string, value: s
   const stmt = database.prepare(`SELECT key, value FROM memories WHERE project_path = ?`)
   return stmt.all(projectPath) as { key: string, value: string }[]
 }
+
+// Prima non esisteva alcun modo, per l'agente o per l'utente, di rimuovere
+// una memoria dopo averla salvata — solo save_memory, mai un dual "dimentica
+// questo". Una regola che smette di valere (uno stack cambiato, una
+// preferenza superata) restava iniettata per sempre in ogni prompt futuro,
+// senza che nessuno potesse correggerla se non cancellando a mano il file
+// .code-ide-memory.db intero (perdendo TUTTE le memorie di TUTTI i progetti).
+export function deleteMemory(projectPath: string, key: string): boolean {
+  const database = initMemoryDB()
+  const stmt = database.prepare(`DELETE FROM memories WHERE project_path = ? AND key = ?`)
+  const result = stmt.run(projectPath, key)
+  return result.changes > 0
+}

@@ -3,7 +3,7 @@ import { FileEditorToolDefinition, executeFileEditor } from './tools/FileEditorP
 import { TerminalToolDefinition, executeTerminalCommand, RunBackgroundCommandToolDefinition, CheckBackgroundCommandToolDefinition, StopBackgroundCommandToolDefinition, executeRunBackgroundCommand, executeCheckBackgroundCommand, executeStopBackgroundCommand } from './tools/TerminalPlugin'
 import { SearchToolDefinition, executeSearch } from './tools/SearchPlugin'
 import { GitToolDefinition, executeGit } from './tools/GitPlugin'
-import { MemoryToolDefinition, executeMemorySave } from './tools/MemoryPlugin'
+import { MemoryToolDefinition, ForgetMemoryToolDefinition, executeMemorySave, executeForgetMemory } from './tools/MemoryPlugin'
 import { GitHubToolDefinition, executeGitHubPublish } from './tools/GitHubPlugin'
 import { TestPluginToolDefinition, executeTestVerify } from './tools/TestPlugin'
 import { SubagentToolDefinition, executeSubagent } from './tools/SubagentPlugin'
@@ -68,6 +68,7 @@ const WRITE_TOOLS = [
   StopBackgroundCommandToolDefinition,
   GitToolDefinition,
   MemoryToolDefinition,
+  ForgetMemoryToolDefinition,
   GitHubToolDefinition,
   TestPluginToolDefinition,
   PatchFileToolDefinition,
@@ -155,6 +156,7 @@ export async function runAgenticTask(
     memories.forEach(m => {
       injectedSystemPrompt += `- ${m.key}: ${m.value}\n`
     })
+    injectedSystemPrompt += "Se una di queste risulta ormai sbagliata o superata (stack cambiato, preferenza non più valida), usa 'forget_memory' con la chiave esatta invece di ignorarla in silenzio o lasciarla iniettata per sempre.\n"
   }
 
   // Sub-agenti persistenti (.code-ide/agents/*.md): il modello li vede elencati
@@ -309,6 +311,9 @@ export async function runAgenticTask(
           } else if (functionName === 'save_memory') {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🧠 Memorizzazione regola: ${parsedArgs.key}]` }, runId)
             toolResult = await executeMemorySave(parsedArgs, cwd)
+          } else if (functionName === 'forget_memory') {
+            broadcastAgentStream(mainWindow, { type: 'status', message: `[🗑️ Rimozione memoria: ${parsedArgs.key}]` }, runId)
+            toolResult = await executeForgetMemory(parsedArgs, cwd)
           } else if (functionName === 'publish_to_github') {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[📦 Pubblicazione su GitHub in corso...]` }, runId)
             toolResult = await executeGitHubPublish(cwd, parsedArgs.repoName, parsedArgs.isPrivate)
