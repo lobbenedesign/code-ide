@@ -20,6 +20,7 @@ import { appendTerminalOutput, getRecentOutput, broadcastAgentStream } from './s
 import { executeGetRepoMap, RepoMapToolDefinition } from './agent/tools/RepoMapPlugin'
 import { executeReadFile, ReadFileToolDefinition } from './agent/tools/ReadFilePlugin'
 import { executeSearch, SearchToolDefinition } from './agent/tools/SearchPlugin'
+import { executeSemanticSearch, SemanticSearchToolDefinition } from './agent/tools/SemanticSearchPlugin'
 import { executeGetDiagnostics, DiagnosticsToolDefinition } from './agent/tools/DiagnosticsPlugin'
 import { executeOcrImage, OcrToolDefinition } from './agent/tools/OcrPlugin'
 import { BrowserToolDefinitions, executeBrowserTool } from './agent/tools/BrowserAgentPlugin'
@@ -763,7 +764,7 @@ ipcMain.handle('omniroute-chat-completion', async (_event, params: { model: stri
 // (navigate/screenshot/eval/smart_locate — guardare, non agire): browser_click
 // e browser_solve_cloudflare restano esclusivi di Agent Mode, come nell'harness.
 const READONLY_CHAT_TOOLS = [
-  ReadFileToolDefinition, SearchToolDefinition, RepoMapToolDefinition, DiagnosticsToolDefinition, OcrToolDefinition,
+  ReadFileToolDefinition, SearchToolDefinition, SemanticSearchToolDefinition, RepoMapToolDefinition, DiagnosticsToolDefinition, OcrToolDefinition,
   BrowserToolDefinitions[0], // browser_navigate
   BrowserToolDefinitions[1], // browser_screenshot
   BrowserToolDefinitions[2], // browser_eval
@@ -776,6 +777,7 @@ ipcMain.handle('run-readonly-tool', async (_event, params: { functionName: strin
   const { functionName, args, cwd } = params
   if (functionName === 'read_file') return executeReadFile(args, cwd)
   if (functionName === 'search_codebase') return executeSearch(args, cwd)
+  if (functionName === 'semantic_search') return executeSemanticSearch(args, cwd)
   if (functionName === 'get_repo_map') return executeGetRepoMap(args, cwd)
   if (functionName === 'get_diagnostics') return executeGetDiagnostics(args, cwd)
   if (functionName === 'ocr_image') return executeOcrImage(args, cwd)

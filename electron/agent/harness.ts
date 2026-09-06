@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron'
 import { FileEditorToolDefinition, executeFileEditor } from './tools/FileEditorPlugin'
 import { TerminalToolDefinition, executeTerminalCommand, RunBackgroundCommandToolDefinition, CheckBackgroundCommandToolDefinition, StopBackgroundCommandToolDefinition, executeRunBackgroundCommand, executeCheckBackgroundCommand, executeStopBackgroundCommand } from './tools/TerminalPlugin'
 import { SearchToolDefinition, executeSearch } from './tools/SearchPlugin'
+import { SemanticSearchToolDefinition, executeSemanticSearch } from './tools/SemanticSearchPlugin'
 import { GitToolDefinition, executeGit } from './tools/GitPlugin'
 import { MemoryToolDefinition, ForgetMemoryToolDefinition, executeMemorySave, executeForgetMemory } from './tools/MemoryPlugin'
 import { GitHubToolDefinition, executeGitHubPublish } from './tools/GitHubPlugin'
@@ -42,6 +43,7 @@ import * as fs from 'fs'
 // scrivere/eseguire nulla finché l'utente non approva esplicitamente.
 const READ_ONLY_TOOLS = [
   SearchToolDefinition,
+  SemanticSearchToolDefinition,
   PerplexityToolDefinition,
   ScraplingToolDefinition,
   RepoMapToolDefinition,
@@ -305,6 +307,9 @@ export async function runAgenticTask(
           } else if (functionName === 'search_codebase') {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🔍 Ricerca nel codice: ${parsedArgs.query}]` }, runId)
             toolResult = await executeSearch(parsedArgs, cwd)
+          } else if (functionName === 'semantic_search') {
+            broadcastAgentStream(mainWindow, { type: 'status', message: `[🧠 Ricerca semantica: ${parsedArgs.query}]` }, runId)
+            toolResult = await executeSemanticSearch(parsedArgs, cwd)
           } else if (functionName === 'manage_git') {
             broadcastAgentStream(mainWindow, { type: 'status', message: `[🐙 Esecuzione Git: ${parsedArgs.action}]` }, runId)
             toolResult = await executeGit(parsedArgs, cwd)
