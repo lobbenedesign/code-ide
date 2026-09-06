@@ -153,7 +153,11 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   // Banner "vuoi attivare Agent Mode?" in attesa di una scelta dell'utente —
   // vedi WRITE_INTENT_PATTERN/handleSend.
   const [pendingAgentModeSuggestion, setPendingAgentModeSuggestion] = useState(false)
-  const [isDeepReasoning, setIsDeepReasoning] = useState(false)
+  // N-04: terzo stato "auto" oltre a on/off — il main process (harness.ts)
+  // decide da solo se il task è abbastanza complesso da giustificare Deep
+  // Reasoning tramite una stima euristica locale (difficultyRouter.ts),
+  // invece di richiedere all'utente di ricordarsi di attivarlo ogni volta.
+  const [deepReasoningMode, setDeepReasoningMode] = useState<'off' | 'on' | 'auto'>('off')
   const [isPlanMode, setIsPlanMode] = useState(false)
   // Ricorda il prompt/contesto dell'ultimo piano generato, per poterlo rieseguire
   // per intero (con accesso completo ai tool) quando l'utente approva.
@@ -705,7 +709,7 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
           cwd: currentProjectRoot || '',
           model: selectedModel,
           images: userMessage.images,
-          deepReasoning: isDeepReasoning,
+          deepReasoning: deepReasoningMode === 'auto' ? 'auto' : deepReasoningMode === 'on',
           planMode: isPlanMode
         }).then((res: any) => {
           if (res?.runId) setMessages(prev => prev.map(m => m.id === 'agent-current' ? { ...m, runId: res.runId } : m))
@@ -1329,15 +1333,23 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
           </label>
           
           {isAgentMode && (
-            <label className="flex items-center gap-2 text-sm text-purple-400 cursor-pointer ml-6">
-              <input
-                type="checkbox"
-                checked={isDeepReasoning}
-                onChange={(e) => { setIsDeepReasoning(e.target.checked); if (e.target.checked) setIsPlanMode(false) }}
-                className="accent-purple-500 w-3 h-3"
-              />
-              <span className="select-none text-xs">🧠 Deep Reasoning (MCTS / Supreme Court)</span>
-            </label>
+            <div className="flex items-center gap-2 ml-6">
+              <span className="text-xs text-purple-400 select-none">🧠 Deep Reasoning (MCTS / Supreme Court):</span>
+              <select
+                value={deepReasoningMode}
+                onChange={(e) => {
+                  const val = e.target.value as 'off' | 'on' | 'auto'
+                  setDeepReasoningMode(val)
+                  if (val !== 'off') setIsPlanMode(false)
+                }}
+                className="bg-[#1e1e1e] text-xs text-purple-300 border border-[#444] rounded px-1.5 py-0.5 outline-none cursor-pointer"
+                title="Off: mai. On: sempre, per ogni task. Automatico: il sistema stima la difficoltà del prompt (lunghezza, file coinvolti, parole chiave a rischio) e lo attiva da solo solo quando conviene."
+              >
+                <option value="off">Off</option>
+                <option value="on">On (sempre)</option>
+                <option value="auto">Automatico (in base alla difficoltà)</option>
+              </select>
+            </div>
           )}
 
           {isAgentMode && (
@@ -1345,7 +1357,7 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
               <input
                 type="checkbox"
                 checked={isPlanMode}
-                onChange={(e) => { setIsPlanMode(e.target.checked); if (e.target.checked) setIsDeepReasoning(false) }}
+                onChange={(e) => { setIsPlanMode(e.target.checked); if (e.target.checked) setDeepReasoningMode('off') }}
                 className="accent-amber-500 w-3 h-3"
               />
               <span className="select-none text-xs">📋 Modalità Piano (approvazione prima di eseguire)</span>

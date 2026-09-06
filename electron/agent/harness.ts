@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron'
+import { estimateTaskDifficulty } from './difficultyRouter'
 import { FileEditorToolDefinition, executeFileEditor } from './tools/FileEditorPlugin'
 import { TerminalToolDefinition, executeTerminalCommand, RunBackgroundCommandToolDefinition, CheckBackgroundCommandToolDefinition, StopBackgroundCommandToolDefinition, executeRunBackgroundCommand, executeCheckBackgroundCommand, executeStopBackgroundCommand } from './tools/TerminalPlugin'
 import { SearchToolDefinition, executeSearch } from './tools/SearchPlugin'
@@ -117,11 +118,28 @@ export async function runAgenticTask(
   cwd: string,
   model: string = 'qwen2.5-coder:latest', // Ollama
   images: string[] = [],
-  deepReasoning: boolean = false,
+  deepReasoning: boolean | 'auto' = false,
   runId?: string,
   planMode: boolean = false
 ) {
-  if (deepReasoning) {
+  // N-04: modalità "Automatico" per Deep Reasoning — una stima euristica locale
+  // (nessuna chiamata LLM per deciderlo) sostituisce la scelta manuale
+  // dell'utente SOLO quando lui stesso ha scelto esplicitamente "Automatico"
+  // nell'interfaccia, mai al posto di un On/Off dichiarato. Vedi difficultyRouter.ts
+  // per il perché non è un instradamento tra modelli diversi.
+  let effectiveDeepReasoning = deepReasoning === true
+  if (deepReasoning === 'auto') {
+    const estimate = estimateTaskDifficulty(userPrompt)
+    effectiveDeepReasoning = estimate.isComplex
+    broadcastAgentStream(mainWindow, {
+      type: 'status',
+      message: estimate.isComplex
+        ? `[🧠 Routing automatico: task valutato complesso (${estimate.reasons.join(', ') || 'punteggio ' + estimate.score}) → Deep Reasoning attivato]`
+        : `[⚡ Routing automatico: task valutato semplice (punteggio ${estimate.score}/100) → esecuzione diretta, senza Deep Reasoning]`
+    }, runId)
+  }
+
+  if (effectiveDeepReasoning) {
     // Se attivato il toggle MCTS/Supreme Court, dirottiamo l'esecuzione al motore avanzato
     await runMCTSTask(mainWindow, userPrompt, systemPrompt, cwd, model, runId)
     return
