@@ -33,7 +33,7 @@ interface AgentRunInfo {
   title: string
   cwd: string
   model: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'cancelled'
   startedAt: number
   endedAt?: number
   lastMessage: string
@@ -159,6 +159,11 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
   const [backgroundRuns, setBackgroundRuns] = useState<AgentRunInfo[]>([])
   const [bgTaskPrompt, setBgTaskPrompt] = useState('')
   const [bgTaskLaunching, setBgTaskLaunching] = useState(false)
+  // Un task lanciato senza presidio potrebbe scrivere/eseguire senza che
+  // nessuno lo stia guardando in tempo reale — questa opzione lo forza a
+  // sola investigazione + piano proposto, da rieseguire manualmente dopo
+  // averlo revisionato (stesso planMode già usato in chat normale).
+  const [bgTaskPlanMode, setBgTaskPlanMode] = useState(false)
   // Evita di salvare la sessione appena caricata (o il messaggio di benvenuto
   // iniziale) come se fosse una modifica dell'utente — solo i cambiamenti reali
   // successivi al caricamento vengono persistiti.
@@ -443,7 +448,7 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
     const removeStream = window.ipcRenderer.on('agent-stream', (event, payload) => {
       const { type, message, taskFullyVerified } = payload
 
-      const isFinal = type === 'done' || type === 'error' || type === 'plan'
+      const isFinal = type === 'done' || type === 'error' || type === 'plan' || type === 'cancelled'
 
       setMessages(prev => {
         const lastMsg = prev[prev.length - 1]
@@ -631,8 +636,8 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
         cwd: currentProjectRoot,
         model: selectedModel,
         images: [],
-        deepReasoning: 'auto', // task non presidiato: lascia decidere l'euristica (N-04) invece di forzare una scelta
-        planMode: false
+        deepReasoning: bgTaskPlanMode ? false : 'auto', // task non presidiato: lascia decidere l'euristica (N-04) invece di forzare una scelta; in Plan Mode non si scrive comunque nulla, MCTS non avrebbe senso
+        planMode: bgTaskPlanMode
       })
       if (res?.runId) setBgTaskPrompt('')
     } finally {
@@ -1495,7 +1500,20 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
                 {bgTaskLaunching ? '⏳...' : '▶️ Avvia'}
               </button>
             </div>
-            <p className="text-[10px] text-gray-500">Gira in Agent Mode con Deep Reasoning automatico (N-04), sul progetto aperto — non blocca né è bloccato dalla chat qui sopra.</p>
+            <label className="flex items-center gap-1.5 text-[10px] text-amber-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={bgTaskPlanMode}
+                onChange={(e) => setBgTaskPlanMode(e.target.checked)}
+                className="accent-amber-500 w-3 h-3"
+              />
+              <span className="select-none">📋 Solo piano (nessuna scrittura/esecuzione, da rieseguire dopo revisione)</span>
+            </label>
+            <p className="text-[10px] text-gray-500">
+              {bgTaskPlanMode
+                ? 'Sola investigazione: propone un piano ma non tocca nulla — nessuno lo sta presidiando in tempo reale.'
+                : 'Gira in Agent Mode con Deep Reasoning automatico (N-04), sul progetto aperto — non blocca né è bloccato dalla chat qui sopra.'}
+            </p>
           </div>
 
           <div className="flex flex-col gap-1">
@@ -1510,9 +1528,23 @@ export default function AiChat({ currentFilePath, activeCode, currentProjectRoot
                   <div key={run.id} className="text-xs bg-[#252526] border border-[#333] rounded px-2 py-1.5 flex flex-col gap-0.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate flex-1" title={run.title}>
-                        {run.status === 'running' ? '🔵' : run.status === 'error' ? '🔴' : '🟢'} {run.title || '(task senza descrizione)'}
+                        {run.status === 'running' ? '🔵' : run.status === 'error' ? '🔴' : run.status === 'cancelled' ? '⏹️' : '🟢'} {run.title || '(task senza descrizione)'}
                       </span>
-                      <span className="text-gray-500 shrink-0">{durationS}s</span>
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-gray-500">{durationS}s</span>
+                        {run.status === 'running' && (
+                          <button
+                            onClick={() => {
+                              // @ts-ignore
+                              window.ipcRenderer.invoke('cancel-agent-run', run.id)
+                            }}
+                            className="text-[10px] px-1 py-0.5 bg-red-900/50 hover:bg-red-800/70 text-red-300 rounded"
+                            title="Interrompe il task al prossimo passo sicuro (non a metà di una scrittura file)"
+                          >
+                            ⏹ Stop
+                          </button>
+                        )}
+                      </span>
                     </div>
                     {run.lastMessage && (
                       <div className="text-gray-500 truncate" title={run.lastMessage}>{run.lastMessage}</div>

@@ -84,4 +84,38 @@ describe('runRegistry: tracciamento dei run paralleli dell\'agente', () => {
     const runs = listRuns()
     expect(runs.map(r => r.id).sort()).toEqual(['done-1', 'done-2', 'done-3', 'still-running'])
   })
+
+  it('requestCancel su un run "running" lo marca per interruzione, isCancelRequested lo riflette', () => {
+    const { registerRun, requestCancel, isCancelRequested } = registryModule
+    registerRun('run-cancel', { title: 'Task da fermare', cwd: '/tmp', model: 'm' })
+
+    expect(isCancelRequested('run-cancel')).toBe(false)
+    const accepted = requestCancel('run-cancel')
+    expect(accepted).toBe(true)
+    expect(isCancelRequested('run-cancel')).toBe(true)
+  })
+
+  it('requestCancel su un run inesistente o già concluso ritorna false e non lo marca', () => {
+    const { registerRun, updateRunFromStreamEvent, requestCancel, isCancelRequested } = registryModule
+
+    expect(requestCancel('non-esiste')).toBe(false)
+    expect(isCancelRequested('non-esiste')).toBe(false)
+
+    registerRun('run-finito', { title: 'Task già concluso', cwd: '/tmp', model: 'm' })
+    updateRunFromStreamEvent('run-finito', 'done', 'ok')
+    expect(requestCancel('run-finito')).toBe(false)
+    expect(isCancelRequested('run-finito')).toBe(false)
+  })
+
+  it('un evento "cancelled" marca lo stato del run come "cancelled" e libera la richiesta di cancel', () => {
+    const { registerRun, requestCancel, updateRunFromStreamEvent, isCancelRequested, listRuns } = registryModule
+    registerRun('run-y', { title: 'Task Y', cwd: '/tmp', model: 'm' })
+    requestCancel('run-y')
+    updateRunFromStreamEvent('run-y', 'cancelled', 'Task interrotto su richiesta dell\'utente')
+
+    const run = listRuns().find(r => r.id === 'run-y')!
+    expect(run.status).toBe('cancelled')
+    expect(run.endedAt).toBeDefined()
+    expect(isCancelRequested('run-y')).toBe(false)
+  })
 })

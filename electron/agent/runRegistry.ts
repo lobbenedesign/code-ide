@@ -13,7 +13,7 @@ import { BrowserWindow } from 'electron'
 // scope all'intero processo main (non per-finestra: un solo BrowserWindow
 // in questa app).
 
-export type RunStatus = 'running' | 'done' | 'error'
+export type RunStatus = 'running' | 'done' | 'error' | 'cancelled'
 
 export interface RunInfo {
   id: string
@@ -27,6 +27,13 @@ export interface RunInfo {
 }
 
 const runs = new Map<string, RunInfo>()
+// Cooperativo, non preemptive: l'harness/deepReasoning controllano questo
+// insieme ai confini naturali del proprio ciclo (prossima iterazione, prossima
+// fase MCTS) invece di essere interrotti a metà di una chiamata LLM in corso
+// — non esiste (né avrebbe senso costruire) un AbortController che tagli
+// davvero una risposta HTTP già in streaming da un provider qualunque tra
+// Ollama/OpenRouter/DuckAI/ecc. senza rifare il client di ognuno.
+const cancelRequested = new Set<string>()
 let notifyWindow: BrowserWindow | null = null
 
 // Evita crescita illimitata in una sessione lunga con molti task lanciati:
@@ -53,8 +60,25 @@ export function registerRun(id: string, info: { title: string, cwd: string, mode
     lastMessage: ''
   }
   runs.set(id, run)
+  cancelRequested.delete(id) // id sempre nuovo (randomUUID), ma pulizia difensiva se mai riusato
   broadcast(run)
   pruneFinishedRuns()
+}
+
+/**
+ * Richiede l'interruzione cooperativa di un run ancora in esecuzione — vedi
+ * il controllo effettivo in harness.ts/deepReasoning.ts (isCancelRequested).
+ * Ritorna false se il run non esiste o è già concluso: niente da interrompere.
+ */
+export function requestCancel(id: string): boolean {
+  const run = runs.get(id)
+  if (!run || run.status !== 'running') return false
+  cancelRequested.add(id)
+  return true
+}
+
+export function isCancelRequested(id: string): boolean {
+  return cancelRequested.has(id)
 }
 
 /**
@@ -69,7 +93,9 @@ export function updateRunFromStreamEvent(id: string, type: string, message: stri
   run.lastMessage = message
   if (type === 'done' || type === 'plan') run.status = 'done'
   else if (type === 'error') run.status = 'error'
+  else if (type === 'cancelled') run.status = 'cancelled'
   if (run.status !== 'running' && run.endedAt === undefined) run.endedAt = Date.now()
+  if (run.status !== 'running') cancelRequested.delete(id) // il run è concluso, la richiesta non serve più
   broadcast(run)
 }
 

@@ -13,6 +13,7 @@ import { broadcastAgentStream } from '../services/outputBuffer'
 import { beginCheckpoint, snapshotFileIfNeeded, finalizeCheckpoint } from '../services/checkpointStore'
 import { checkToolCallAllowed } from './permissions'
 import { compactMessagesIfNeeded } from './contextCompactor'
+import { isCancelRequested } from './runRegistry'
 
 // typescript usa internamente globali CJS (__filename) incompatibili con il bundle
 // ESM del main process: caricato a runtime, come già si fa per node-pty in main.ts.
@@ -335,6 +336,18 @@ export async function runMCTSTask(
   }
   const candidates = await Promise.all(branchPromises)
 
+  // Interruzione cooperativa (vedi lo stesso pattern in harness.ts): l'MCTS
+  // genera i rami in parallelo con Promise.all, quindi non può essere
+  // interrotto A METÀ di quella fase — ma può fermarsi PRIMA delle fasi
+  // successive (simulazione/raffinamento/applicazione) invece di continuare
+  // a spendere tempo/costo su un risultato che l'utente non vuole più
+  // vedere applicato. Nessuna modifica viene scritta se si interrompe qui:
+  // executeBestTool non è ancora stato chiamato.
+  if (runId && isCancelRequested(runId)) {
+    broadcastAgentStream(mainWindow, { type: 'cancelled', message: `[⏹️ MCTS interrotto su richiesta dell'utente dopo l'espansione dei rami — nessuna modifica applicata]` }, runId)
+    return
+  }
+
   broadcastAgentStream(mainWindow, { type: 'status', message: `[🌳 MCTS: simulazione reale (diagnostica di tipo applicata e ripristinata) di ogni ramo...]` }, runId)
 
   // La simulazione scrive transitoriamente sui percorsi reali del progetto:
@@ -345,6 +358,11 @@ export async function runMCTSTask(
     const node = await simulateAndScore(candidate, cwd)
     simulatedNodes.push(node)
     broadcastAgentStream(mainWindow, { type: 'status', message: `[🌳 Ramo ${node.judgeId}: punteggio ${node.score.toFixed(0)}/100 — ${node.diagnosticsSummary.split('\n')[0]}]` }, runId)
+  }
+
+  if (runId && isCancelRequested(runId)) {
+    broadcastAgentStream(mainWindow, { type: 'cancelled', message: `[⏹️ MCTS interrotto su richiesta dell'utente dopo la simulazione — nessuna modifica applicata]` }, runId)
+    return
   }
 
   simulatedNodes.sort((a, b) => b.score - a.score)
@@ -364,6 +382,13 @@ export async function runMCTSTask(
 
   simulatedNodes.sort((a, b) => b.score - a.score)
   const bestNode = simulatedNodes[0]
+
+  // Ultimo punto di interruzione utile: DOPO questo, executeBestTool scrive
+  // davvero sui file — dal qui in poi non si torna più indietro con un cancel.
+  if (runId && isCancelRequested(runId)) {
+    broadcastAgentStream(mainWindow, { type: 'cancelled', message: `[⏹️ MCTS interrotto su richiesta dell'utente prima dell'applicazione — nessuna modifica scritta]` }, runId)
+    return
+  }
 
   broadcastAgentStream(mainWindow, { type: 'status', message: `[🌳 MCTS: nodo vincente Ramo ${bestNode.judgeId}${bestNode.refined ? ' (raffinato)' : ''} con punteggio ${bestNode.score.toFixed(0)}/100. Applicazione in corso...]` }, runId)
 

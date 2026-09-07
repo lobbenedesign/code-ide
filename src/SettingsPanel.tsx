@@ -300,6 +300,17 @@ export default function SettingsPanel({ onClose, currentProjectRoot }: SettingsP
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">Modelli locali (Ollama)</h3>
             <div className="bg-[#1e1e1e] rounded p-3 text-sm flex flex-col gap-3">
+              {/* Il tool 'semantic_search' (N-03) richiede specificamente questo
+                  modello per generare gli embedding — prima l'unico modo per
+                  scoprire che mancava era farlo fallire dal vivo dentro un run
+                  dell'agente, con un errore visibile solo nello stream della chat. */}
+              {ollamaModels && (
+                <div className={`text-xs rounded px-2 py-1.5 ${ollamaModels.some(m => m.name.startsWith('nomic-embed-text')) ? 'bg-green-900/30 text-green-300' : 'bg-yellow-900/30 text-yellow-300'}`}>
+                  {ollamaModels.some(m => m.name.startsWith('nomic-embed-text'))
+                    ? '✅ Ricerca semantica (tool "semantic_search"): pronta — nomic-embed-text installato.'
+                    : '⚠️ Ricerca semantica (tool "semantic_search") non disponibile: installa "nomic-embed-text" qui sotto per abilitarla.'}
+                </div>
+              )}
               <div>
                 <div className="text-xs text-gray-400 mb-1.5">Installati su questo Mac{ollamaModels ? ` (${ollamaModels.length})` : ''}</div>
                 {ollamaModels === null && <p className="text-xs text-gray-500 italic">Verifica in corso...</p>}

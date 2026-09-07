@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { estimateTaskDifficulty } from './difficultyRouter'
+import { isCancelRequested } from './runRegistry'
 import { FileEditorToolDefinition, executeFileEditor } from './tools/FileEditorPlugin'
 import { TerminalToolDefinition, executeTerminalCommand, RunBackgroundCommandToolDefinition, CheckBackgroundCommandToolDefinition, StopBackgroundCommandToolDefinition, executeRunBackgroundCommand, executeCheckBackgroundCommand, executeStopBackgroundCommand } from './tools/TerminalPlugin'
 import { SearchToolDefinition, executeSearch } from './tools/SearchPlugin'
@@ -239,6 +240,19 @@ export async function runAgenticTask(
 
   while (!isTaskComplete && iterations < maxIterations) {
     iterations++
+
+    // Interruzione cooperativa (pulsante "⏹ Stop" nell'Agent Manager, vedi
+    // runRegistry.ts): controllata qui, ai confini dell'iterazione, non a
+    // metà di una chiamata LLM in corso — coerente con com'è già strutturato
+    // tutto il resto del loop (nessun AbortController reale attraversa i
+    // vari client LLM). Il task si ferma prima della prossima iterazione
+    // invece che istantaneamente.
+    if (runId && isCancelRequested(runId)) {
+      isTaskComplete = true
+      finalResponse = '⏹️ Task interrotto su richiesta dell\'utente.'
+      broadcastAgentStream(mainWindow, { type: 'cancelled', message: `[⏹️ Task interrotto su richiesta dell'utente dopo ${iterations - 1} iterazioni completate]` }, runId)
+      break
+    }
 
     // Compattazione automatica del contesto PRIMA di ogni chiamata: un task
     // lungo (tool result voluminosi come repo-map/read_file, molte iterazioni)

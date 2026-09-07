@@ -9,7 +9,7 @@ import * as dotenv from 'dotenv'
 import { initTelegramBot, sendTelegramMessage } from './bots/telegram'
 import { initWhatsAppBot, sendWhatsAppMessage } from './bots/whatsapp'
 import { runAgenticTask } from './agent/harness'
-import { setRunRegistryWindow, registerRun, listRuns } from './agent/runRegistry'
+import { setRunRegistryWindow, registerRun, listRuns, requestCancel } from './agent/runRegistry'
 import { resetChatCallCounter } from './agent/llmClient'
 import { saveSession, loadSession, listSessions, deleteSession, type SessionData } from './services/sessionStore'
 import { getUsage, resetUsage } from './services/usageTracker'
@@ -852,6 +852,15 @@ ipcMain.handle('run-agent-task', (_event, data) => {
 // da una lista vuota se il pannello viene aperto a metà di un run già iniziato.
 ipcMain.handle('list-agent-runs', () => {
   return { success: true, data: listRuns() }
+})
+
+// Interruzione cooperativa di un run: vedi runRegistry.ts per il perché non
+// è un kill immediato (nessun AbortController reale attraversa i vari client
+// LLM) — il task si ferma al prossimo confine sicuro (prossima iterazione
+// dell'harness, prossima fase dell'MCTS), mai a metà di una scrittura su file.
+ipcMain.handle('cancel-agent-run', (_event, runId: string) => {
+  const cancelled = requestCancel(runId)
+  return { success: cancelled }
 })
 
 app.whenReady().then(createWindow)
